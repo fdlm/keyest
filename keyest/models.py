@@ -18,19 +18,24 @@ class DenseCombiner(chainer.Chain):
 
 class BinaryTreeNet(chainer.Chain):
 
-    def __init__(self, combiner, n_units):
+    def __init__(self, combiner, n_units, device=-1):
         super(BinaryTreeNet, self).__init__(
             combiner=combiner
         )
         self.n_units = n_units
+        if device == -1:
+            self.pad = np.zeros
+        else:
+            import cupy
+            self.pad = cupy.zeros
 
     def __call__(self, x):
         batch_size = x.shape[0]
+        pad = self.pad((x.shape[0], 1, self.n_units), dtype=np.float32)
 
         def reshape(x):
             x = F.reshape(x, (batch_size, -1, self.n_units))
             if x.shape[1] % 2 != 0:
-                pad = np.zeros((x.shape[0], 1, self.n_units), dtype=np.float32)
                 x = F.concat([x, pad], axis=1)
             return F.reshape(x, (-1, 2, self.n_units))
 
@@ -57,15 +62,20 @@ class ConvCombiner(chainer.Chain):
 
 class BinaryTreeConv(chainer.Chain):
 
-    def __init__(self, combiner, n_units):
+    def __init__(self, combiner, n_units, device=-1):
         super(BinaryTreeConv, self).__init__(
             combiner=combiner
         )
         self.n_units = n_units
+        if device == -1:
+            self.pad = np.zeros
+        else:
+            import cupy
+            self.pad = cupy.zeros
 
     def __call__(self, x):
         x = F.reshape(x, (x.shape[0], 1, x.shape[1], x.shape[2]))
-        pad = np.zeros((x.shape[0], 1, 1, self.n_units), dtype=np.float32)
+        pad = self.pad((x.shape[0], 1, 1, self.n_units), dtype=np.float32)
 
         while x.shape[2] != 1:
             if x.shape[2] % 2 != 0:
@@ -73,6 +83,23 @@ class BinaryTreeConv(chainer.Chain):
             x = self.combiner(x)
 
         return F.reshape(x, (x.shape[0], self.n_units))
+
+
+class Mlp(chainer.ChainList):
+
+    def __init__(self, n_layers=3, n_units=256, dropout=0.5):
+        super(Mlp, self).__init__(
+            *[L.Linear(None, n_units) for _ in range(n_layers)]
+        )
+        self.n_layers = n_layers
+        self.dropout = dropout
+
+    def __call__(self, x, test=False):
+        for l in range(self.n_layers):
+            x = self[l](x)
+            x = F.dropout(x, self.dropout, not test)
+            x = F.relu(x)
+        return x
 
 
 class Mse(chainer.Chain):
@@ -84,3 +111,4 @@ class Mse(chainer.Chain):
 
     def __call__(self, x, y):
         return F.mean_squared_error(self.representation(x), y)
+
