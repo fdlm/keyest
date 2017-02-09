@@ -22,7 +22,7 @@ class SingleKeyMajMinTarget(object):
         target_class = self.root_note_map[root]
         if mode == 'minor':
             target_class += 12
-        return target_class
+        return np.int32(target_class)
 
 
 class LogFiltSpec:
@@ -60,7 +60,7 @@ class LogFiltSpec:
         return np.hstack(specs).astype(np.float32)
 
 
-def load_giantsteps_key(data_dir, feature_cache_dir):
+def load_giantsteps_key_dataset(data_dir, feature_cache_dir):
 
     compute_features = LogFiltSpec(
         frame_sizes=[8192],
@@ -83,3 +83,8 @@ def load_giantsteps_key(data_dir, feature_cache_dir):
         compute_features=compute_features,
         compute_targets=compute_targets
     )
+
+
+def load_data(files):
+    return [(np.load(f[0]), np.load(f[1]))
+            for f in zip(files['feat'], files['targ'])]

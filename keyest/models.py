@@ -87,18 +87,27 @@ class BinaryTreeConv(chainer.Chain):
 
 class Mlp(chainer.ChainList):
 
-    def __init__(self, n_layers=3, n_units=256, dropout=0.5):
+    def __init__(self,
+                 n_layers=3,
+                 n_units=256,
+                 dropout=0.5,
+                 activation=F.relu):
         super(Mlp, self).__init__(
             *[L.Linear(None, n_units) for _ in range(n_layers)]
         )
         self.n_layers = n_layers
         self.dropout = dropout
+        self.activation = activation
+        self.train = True
 
-    def __call__(self, x, test=False):
+    def set_train(self, train):
+        self.train = train
+
+    def __call__(self, x):
         for l in range(self.n_layers):
             x = self[l](x)
-            x = F.dropout(x, self.dropout, not test)
-            x = F.relu(x)
+            x = F.dropout(x, self.dropout, self.train)
+            x = self.activation(x)
         return x
 
 
