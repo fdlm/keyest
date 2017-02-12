@@ -75,6 +75,40 @@ class SequenceIterator(chainer.dataset.Iterator):
         self.epoch = serializer('epoch', self.epoch)
 
 
+class ThreadedIterator(chainer.dataset.Iterator):
+
+    def __init__(self, base_iterator, n_cached_items):
+        self.base_iterator = base_iterator
+        self.queue = Queue.Queue(maxsize=n_cached_items)
+        self.end_marker = object()
+
+        def producer():
+            for item in self.base_iterator:
+                self.queue.put(item)
+            self.queue.put(self.end_marker)
+
+        self.thread = threading.Thread(target=producer)
+        self.thread.daemon = True
+        self.thread.start()
+
+    def __next__(self):
+        item = self.queue.get()
+        if item is self.end_marker:
+            raise StopIteration
+        return item
+
+    @property
+    def epoch(self):
+        return self.base_iterator.epoch
+
+    @property
+    def epoch_detail(self):
+        return self.base_iterator.epoch_detail
+
+    def serialize(self, serializer):
+        self.base_iterator.serialize(serializer)
+
+
 class TestModeEvaluator(extensions.Evaluator):
 
     def evaluate(self):

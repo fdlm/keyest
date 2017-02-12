@@ -18,16 +18,21 @@ class DenseCombiner(chainer.Chain):
 
 class BinaryTreeNet(chainer.Chain):
 
-    def __init__(self, combiner, n_units, device=-1):
+    def __init__(self, combiner, n_units, dropout, device=-1):
         super(BinaryTreeNet, self).__init__(
             combiner=combiner
         )
         self.n_units = n_units
+        self.dropout = dropout
+        self.train = True
         if device == -1:
             self.pad = np.zeros
         else:
             import cupy
             self.pad = cupy.zeros
+
+    def set_train(self, train):
+        self.train = train
 
     def __call__(self, x):
         batch_size = x.shape[0]
@@ -42,6 +47,7 @@ class BinaryTreeNet(chainer.Chain):
         pred = reshape(x)
         while pred.shape[0] != batch_size:
             pred = self.combiner(pred)
+            pred = F.dropout(pred, self.dropout, self.train)
             pred = reshape(pred)
 
         return self.combiner(pred)

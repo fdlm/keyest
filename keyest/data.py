@@ -85,6 +85,16 @@ def load_giantsteps_key_dataset(data_dir, feature_cache_dir):
     )
 
 
-def load_data(files):
+def get_splits(dataset, val_fold, test_fold):
+    train_split, val_split, test_split = dataset.fold_split(val_fold,
+                                                            test_fold)
+    train_set = load_data(train_split, use_augmented=True)
+    val_set = load_data(val_split, use_augmented=False)
+    test_set = load_data(test_split, use_augmented=False)
+    return train_set, val_set, test_set
+
+
+def load_data(files, use_augmented):
     return [(np.load(f[0]), np.load(f[1]))
-            for f in zip(files['feat'], files['targ'])]
+            for f in zip(files['feat'], files['targ'])
+            if use_augmented or '.0.' in f[0]]

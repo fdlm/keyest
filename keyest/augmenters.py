@@ -63,7 +63,10 @@ class Detuning(object):
 
         new_data = np.empty_like(data)
         for i in range(batch_size):
-            new_data[i] = shift(
-                data[i], (shifts[i] * self.bins_per_semitone, 0))
+            if shifts[i] == 0:
+                new_data[i] = data[i]
+            else:
+                new_data[i] = shift(
+                    data[i], (shifts[i] * self.bins_per_semitone, 0))
 
         return new_data, targets
