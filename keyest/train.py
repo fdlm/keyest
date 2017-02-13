@@ -1,3 +1,4 @@
+import numpy as np
 import chainer
 import chainer.functions as F
 import chainer.links as L
@@ -22,6 +23,7 @@ Options:
     --combiner_type=S  Type of combiner (tree or avg) [default: tree]
     --n_combiner_units=I  Number of combiner units [default: 24]
     --combiner_dropout=F  Dropout probability in combiner [default: 0.4]
+    --batch_size=I  Batch Size to use [default: 8]
 """
 
 
@@ -73,13 +75,14 @@ def main():
     combiner_type = args['--combiner_type']
     n_combiner_units = int(args['--n_combiner_units'])
     combiner_dropout = float(args['--combiner_dropout'])
+    batch_size = int(args['--batch_size'])
 
     dataset = data.load_giantsteps_key_dataset(
         'data/giantsteps-key-dataset-augmented',
         'feature_cache'
     )
 
-    train_set, val_set, test_set = data.get_splits(dataset, 0, 1)
+    train_set, val_set, test_set, targ_dist = data.get_splits(dataset, 0, 1)
 
     device = 0 if chainer.cuda.available else -1
     preproc = Mlp(
@@ -114,7 +117,9 @@ def main():
     augmenters = [
         # Detuning(0.5, 0.4, 2)
     ]
-    train_it = SequenceIterator(train_set, batch_size=8, augmenters=augmenters)
+    train_it = SequenceIterator(train_set, batch_size=batch_size,
+                                augmenters=augmenters,
+                                distribution=targ_dist)
     train_it = ThreadedIterator(train_it, n_cached_items=30)
     val_it = SequenceIterator(val_set, batch_size=1,
                               repeat=False, shuffle=False)

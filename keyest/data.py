@@ -91,7 +91,12 @@ def get_splits(dataset, val_fold, test_fold):
     train_set = load_data(train_split, use_augmented=True)
     val_set = load_data(val_split, use_augmented=False)
     test_set = load_data(test_split, use_augmented=False)
-    return train_set, val_set, test_set
+
+    l = [np.load(f) for f in train_split['targ'] if '.0.' in f]
+    train_targ_dist = np.bincount(np.hstack(l), minlength=24).astype(np.float)
+    train_targ_dist /= train_targ_dist.sum()
+
+    return train_set, val_set, test_set, train_targ_dist
 
 
 def load_data(files, use_augmented):

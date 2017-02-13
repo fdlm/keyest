@@ -10,20 +10,41 @@ from chainer.training import extensions
 class SequenceIterator(chainer.dataset.Iterator):
 
     def __init__(self, datasource, batch_size, repeat=True, shuffle=True,
-                 augmenters=None):
+                 augmenters=None, distribution=None):
         self.datasource = datasource
         self.batch_size = batch_size
         self.epoch = 0
+        self.iteration = 0
         self.is_new_epoch = False
         self.repeat = repeat
         self.shuffle = shuffle
         self.offsets = [i * len(datasource) // batch_size
                         for i in range(batch_size)]
         self.augmenters = augmenters or []
-        self.epoch_idxs = range(len(datasource))
-        if shuffle:
-            random.shuffle(self.epoch_idxs)
-        self.iteration = 0
+
+        if distribution is None:
+            self.distribution = None
+        else:
+            _, targets = zip(*datasource)
+            true_dist = np.bincount(targets, minlength=24)
+            target_prob = distribution / true_dist
+            self.distribution = np.array([target_prob[t] for t in targets])
+
+        self._select_idxs()
+
+    def _select_idxs(self):
+        if not self.shuffle:
+            self.epoch_idxs = range(len(self.datasource))
+        else:
+            if self.distribution is None:
+                self.epoch_idxs = range(len(self.datasource))
+                random.shuffle(self.epoch_idxs)
+            else:
+                self.epoch_idxs = np.random.choice(
+                    len(self.datasource),
+                    len(self.datasource),
+                    p=self.distribution
+                )
 
     def __next__(self):
         length = len(self.datasource)
@@ -57,9 +78,7 @@ class SequenceIterator(chainer.dataset.Iterator):
         self.is_new_epoch = self.epoch < epoch
         if self.is_new_epoch:
             self.epoch = epoch
-            self.epoch_idxs = range(len(self.datasource))
-            if self.shuffle:
-                random.shuffle(self.epoch_idxs)
+            self._select_idxs()
 
         for augment in self.augmenters:
             data, targests = augment(data, targets)
