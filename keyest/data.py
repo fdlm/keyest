@@ -19,7 +19,7 @@ class SingleKeyMajMinTarget(object):
 
     def __call__(self, target_file, _):
         root, mode = open(target_file).read().split()
-        target_class = self.root_note_map[root]
+        target_class = self.root_note_map[root.upper()]
         if mode == 'minor':
             target_class += 12
         return np.int32(target_class)

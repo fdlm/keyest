@@ -22,8 +22,9 @@ Options:
     --preproc_dropout=F  Dropout probability in preprocessing [default: 0.5]
     --combiner_type=S  Type of combiner (tree or avg) [default: tree]
     --n_combiner_units=I  Number of combiner units [default: 24]
-    --combiner_dropout=F  Dropout probability in combiner [default: 0.4]
+    --combiner_dropout=F  Dropout probability in combiner [default: 0.0]
     --batch_size=I  Batch Size to use [default: 8]
+    --no_dist_sampling  do not use distribution sampling
 """
 
 
@@ -76,13 +77,29 @@ def main():
     n_combiner_units = int(args['--n_combiner_units'])
     combiner_dropout = float(args['--combiner_dropout'])
     batch_size = int(args['--batch_size'])
+    no_dist_sampling = args['--no_dist_sampling']
+
+    print 'Loading GiantSteps Dataset...'
 
     dataset = data.load_giantsteps_key_dataset(
         'data/giantsteps-key-dataset-augmented',
         'feature_cache'
     )
-
     train_set, val_set, test_set, targ_dist = data.get_splits(dataset, 0, 1)
+    if no_dist_sampling:
+        targ_dist = None
+
+    print 'Loading GiantSteps MTG Dataset...'
+    additional_train_dataset = data.load_giantsteps_key_dataset(
+        'data/giantsteps-mtg-key-dataset-augmented',
+        'feature_cache'
+    )
+    additional_train_set = data.load_data(
+        additional_train_dataset.all_files(),
+        use_augmented=True
+    )
+
+    train_set += additional_train_set
 
     device = 0 if chainer.cuda.available else -1
     preproc = Mlp(
