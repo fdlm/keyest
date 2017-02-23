@@ -60,16 +60,80 @@ class LogFiltSpec:
         return np.hstack(specs).astype(np.float32)
 
 
-def load_giantsteps_key_dataset(data_dir, feature_cache_dir):
+class DeepChroma:
 
-    compute_features = LogFiltSpec(
-        frame_sizes=[8192],
-        num_bands=24,
-        fmin=65,
-        fmax=2100,
-        fps=5,
-        unique_filters=True
-    )
+    def __init__(self, fps, fmin=65, fmax=2100, unique_filters=True,
+                 models=None, sample_rate=44100, fold=None):
+        assert fps <= 10, 'Cannot handle fps larger than 10 yet.'
+        assert 10 % fps == 0, 'Needs to be divisible'
+        self.factor = int(10 / fps)
+        from madmom.audio.chroma import DeepChromaProcessor
+        from hashlib import sha1
+        import pickle
+        self.fps = fps
+        self.fmin = fmin
+        self.fmax = fmax
+        self.unique_filters = unique_filters
+        self.dcp = DeepChromaProcessor(
+            fmin=fmin, fmax=fmax, unique_filters=unique_filters, models=models
+        )
+        self.model_hash = sha1(pickle.dumps(self.dcp)).hexdigest()
+
+    @property
+    def name(self):
+        return 'deepchroma_fps={}_fmin={}_fmax={}_uf={}_mdlhsh={}'.format(
+            self.fps, self.fmin, self.fmax, self.unique_filters,
+            self.model_hash
+        )
+
+    def __call__(self, audio_file):
+        return self.dcp(audio_file)[::self.factor].astype(np.float32)
+
+
+class CnnChordFeatures:
+
+    def __init__(self, fps):
+        assert fps <= 10, 'Cannot handle fps larger than 10 yet.'
+        assert 10 % fps == 0, 'Needs to be divisible'
+        self.factor = int(10 / fps)
+        from madmom.features.chords import CNNChordFeatureProcessor
+        from hashlib import sha1
+        import pickle
+        self.fps = fps
+        self.cnnp = CNNChordFeatureProcessor()
+        self.model_hash = sha1(pickle.dumps(self.cnnp)).hexdigest()
+
+    @property
+    def name(self):
+        return 'cnnchordfeature_fps={}_mdlhsh={}'.format(
+            self.fps, self.model_hash
+        )
+
+    def __call__(self, audio_file):
+        return self.cnnp(audio_file)[::self.factor].astype(np.float32)
+
+
+def load_giantsteps_key_dataset(data_dir, feature_cache_dir, feature):
+
+    if feature == 'lfs':
+        compute_features = LogFiltSpec(
+            frame_sizes=[8192],
+            num_bands=24,
+            fmin=65,
+            fmax=2100,
+            fps=5,
+            unique_filters=True
+        )
+    elif feature == 'dc':
+        compute_features = DeepChroma(
+            fps=5
+        )
+    elif feature == 'cnn':
+        compute_features = CnnChordFeatures(
+            fps=5
+        )
+    else:
+        raise ValueError('Invalid feature: {}'.format(feature))
 
     compute_targets = SingleKeyMajMinTarget()
 
