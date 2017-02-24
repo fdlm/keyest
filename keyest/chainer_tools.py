@@ -86,6 +86,10 @@ class SequenceIterator(chainer.dataset.Iterator):
         return zip(data, targets)
 
     @property
+    def n_elements(self):
+        return len(self.datasource) // self.batch_size + 1
+
+    @property
     def epoch_detail(self):
         return float(self.iteration * self.batch_size) / len(self.datasource)
 
@@ -115,6 +119,10 @@ class ThreadedIterator(chainer.dataset.Iterator):
         if item is self.end_marker:
             raise StopIteration
         return item
+
+    @property
+    def n_elements(self):
+        return self.base_iterator.n_elements
 
     @property
     def epoch(self):

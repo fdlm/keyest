@@ -41,7 +41,7 @@ class Model(chainer.Chain):
             preproc=preproc,
             project=L.Linear(None, n_units),
             combiner=combiner,
-            output=L.Linear(n_units, 25)
+            output=L.Linear(n_units, 24)
         )
 
         self.train = True
