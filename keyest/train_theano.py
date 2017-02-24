@@ -13,12 +13,13 @@ from lasagne_tools import SequenceIterator
 
 USAGE = """
 Usage:
-    train.py [options]
+    train_theano.py [options]
 
 Options:
     --n_preproc_layers=I  Number of preprocessing layers [default: 0]
     --n_preproc_units=I  Number of preprocessing units [default: 64]
     --preproc_dropout=F  Dropout probability in preprocessing [default: 0.5]
+    --combiner_type=S  Type of combiner (rnn or avg) [default: avg]
     --n_combiner_units=I  Number of combiner units [default: 24]
     --batch_size=I  Batch Size to use [default: 8]
     --no_dist_sampling  do not use distribution sampling
@@ -56,14 +57,15 @@ class AverageLayer(lnn.layers.MergeLayer):
             return tt.sum(input * mask, axis=self.axis) / tt.sum(mask, axis=1)
 
 
-def build_model(feature_size,
-                n_preproc_layers,
-                n_preproc_units,
-                preproc_dropout,
-                n_combiner_units):
+def build_avg_model(feature_size,
+                    n_preproc_layers,
+                    n_preproc_units,
+                    preproc_dropout,
+                    n_combiner_units):
 
-    from lasagne.layers import DenseLayer, InputLayer, DropoutLayer, ReshapeLayer
-    from lasagne.nonlinearities import identity, softmax, elu
+    from lasagne.layers import (DenseLayer, InputLayer, DropoutLayer,
+                                ReshapeLayer)
+    from lasagne.nonlinearities import softmax, elu
 
     net = InputLayer((None, None, feature_size))
     mask = InputLayer((None, None))
@@ -84,11 +86,69 @@ def build_model(feature_size,
     return net, input_var, mask_var
 
 
+def build_rnn_model(feature_size,
+                    n_preproc_layers,
+                    n_preproc_units,
+                    preproc_dropout,
+                    n_combiner_units=12):
+
+    from lasagne.layers import (DenseLayer, InputLayer, DropoutLayer,
+                                ReshapeLayer, RecurrentLayer, ConcatLayer)
+    from lasagne.nonlinearities import softmax, elu
+
+    net = InputLayer((None, None, feature_size))
+    mask = InputLayer((None, None))
+    input_var = net.input_var
+    mask_var = mask.input_var
+    n_batch, n_time_steps, _ = input_var.shape
+
+    if n_preproc_layers > 0:
+        net = ReshapeLayer(net, (-1, feature_size))
+        for i in range(n_preproc_layers):
+            net = DenseLayer(net, num_units=n_preproc_units, nonlinearity=elu)
+            if preproc_dropout > 0.:
+                net = DropoutLayer(net, p=preproc_dropout)
+        net = ReshapeLayer(net, (n_batch, n_time_steps, n_preproc_units))
+
+    fwd = RecurrentLayer(
+        incoming=net,
+        mask_input=mask,
+        num_units=n_combiner_units,
+        W_in_to_hid=lnn.init.HeNormal(gain=0.9),
+        W_hid_to_hid=np.identity(n_combiner_units, dtype=np.float32),
+        learn_init=True,
+        nonlinearity=elu,
+        name='Recurrent Fwd',
+        only_return_final=True,
+        grad_clipping=10
+    )
+
+    bck = RecurrentLayer(
+        incoming=net,
+        mask_input=mask,
+        num_units=n_combiner_units,
+        W_in_to_hid=lnn.init.HeNormal(gain=0.9),
+        W_hid_to_hid=np.identity(n_combiner_units, dtype=np.float32),
+        learn_init=True,
+        nonlinearity=elu,
+        name='Recurrent Bck',
+        only_return_final=True,
+        backwards=True,
+        grad_clipping=10
+    )
+
+    net = ConcatLayer([fwd, bck])
+    net = DenseLayer(net, num_units=24, nonlinearity=softmax)
+
+    return net, input_var, mask_var
+
+
 def main():
     args = docopt(USAGE)
     n_preproc_layers = int(args['--n_preproc_layers'])
     n_preproc_units = int(args['--n_preproc_units'])
     preproc_dropout = float(args['--preproc_dropout'])
+    combiner_type = args['--combiner_type']
     n_combiner_units = int(args['--n_combiner_units'])
     batch_size = int(args['--batch_size'])
     no_dist_sampling = args['--no_dist_sampling']
@@ -140,6 +200,13 @@ def main():
         targ_dist /= targ_dist.sum()
     else:
         targ_dist = None
+
+    if combiner_type == 'avg':
+        build_model = build_avg_model
+    elif combiner_type == 'rnn':
+        build_model = build_rnn_model
+    else:
+        raise ValueError('Unknown combiner type: {}'.format(combiner_type))
 
     model, X, m = build_model(
         feature_size=training_set[0][0].shape[-1],
