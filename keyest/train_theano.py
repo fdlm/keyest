@@ -1,3 +1,4 @@
+from __future__ import print_function
 from docopt import docopt
 from os.path import join, exists
 import os
@@ -26,6 +27,7 @@ Options:
     --n_epochs=I  number of epochs to train [default: 1000]
     --exp_id=S  output directory [default: last_exp]
     --feature=S  feature to use (lfs/dc) [default: lfs]
+    --data=S  data setup (giantsteps/billboard) [default: giantsteps]
 """
 
 
@@ -64,7 +66,7 @@ def build_avg_model(feature_size,
                     n_combiner_units):
 
     from lasagne.layers import (DenseLayer, InputLayer, DropoutLayer,
-                                ReshapeLayer)
+                                ReshapeLayer, Conv2DLayer)
     from lasagne.nonlinearities import softmax, elu
 
     net = InputLayer((None, None, feature_size))
@@ -72,14 +74,18 @@ def build_avg_model(feature_size,
     input_var = net.input_var
     mask_var = mask.input_var
     n_batch, n_time_steps, _ = input_var.shape
-    net = ReshapeLayer(net, (-1, feature_size))
+    # net = ReshapeLayer(net, (-1, feature_size))
+    net = ReshapeLayer(net, (n_batch, 1, n_time_steps, feature_size))
     for i in range(n_preproc_layers):
-        net = DenseLayer(net, num_units=n_preproc_units, nonlinearity=elu)
-        if preproc_dropout > 0.:
-            net = DropoutLayer(net, p=preproc_dropout)
+        net = Conv2DLayer(net, num_filters=n_preproc_units,
+                          filter_size=5, pad='same', nonlinearity=elu)
+        # net = DenseLayer(net, num_units=n_preproc_units, nonlinearity=elu)
+        # if preproc_dropout > 0.:
+        #     net = DropoutLayer(net, p=preproc_dropout)
 
+    net = ReshapeLayer(net, (n_batch * n_time_steps, n_preproc_units * feature_size), name='bar')
     net = DenseLayer(net, num_units=n_combiner_units, nonlinearity=elu)
-    net = ReshapeLayer(net, (n_batch, n_time_steps, n_combiner_units))
+    net = ReshapeLayer(net, (n_batch, n_time_steps, n_combiner_units), name='foo')
     net = AverageLayer(net, axis=1, mask_input=mask)
     net = DenseLayer(net, num_units=24, nonlinearity=softmax)
 
@@ -115,26 +121,26 @@ def build_rnn_model(feature_size,
         mask_input=mask,
         num_units=n_combiner_units,
         W_in_to_hid=lnn.init.HeNormal(gain=0.9),
-        W_hid_to_hid=np.identity(n_combiner_units, dtype=np.float32),
+        W_hid_to_hid=np.identity(n_combiner_units, dtype=np.float32) * 0.3,
         learn_init=True,
         nonlinearity=elu,
         name='Recurrent Fwd',
         only_return_final=True,
-        grad_clipping=10
+        grad_clipping=1.
     )
 
     bck = RecurrentLayer(
         incoming=net,
         mask_input=mask,
         num_units=n_combiner_units,
-        W_in_to_hid=lnn.init.HeNormal(gain=0.9),
-        W_hid_to_hid=np.identity(n_combiner_units, dtype=np.float32),
+        W_in_to_hid=lnn.init.HeNormal(gain=0.5),
+        W_hid_to_hid=np.identity(n_combiner_units, dtype=np.float32) * 0.3,
         learn_init=True,
         nonlinearity=elu,
         name='Recurrent Bck',
         only_return_final=True,
         backwards=True,
-        grad_clipping=10
+        grad_clipping=1.
     )
 
     net = ConcatLayer([fwd, bck])
@@ -155,56 +161,52 @@ def main():
     n_epochs = int(args['--n_epochs'])
     exp_id = args['--exp_id']
     feature = args['--feature']
+    data_type = args['--data']
 
-    print args
+    print(args)
 
     exp_dir = join('results', exp_id)
     if not exists(exp_dir):
         os.makedirs(exp_dir)
     yaml.dump(args, open(join(exp_dir, 'config'), 'w'))
 
-    print 'Loading GiantSteps Dataset...'
-
-    test_dataset = data.load_giantsteps_key_dataset(
-        'data/giantsteps-key-dataset-augmented',
-        'feature_cache',
-        feature
-    )
-
-    test_set = data.load_data(
-        test_dataset.all_files(),
-        use_augmented=False
-    )
-
-    print 'Loading GiantSteps MTG Dataset...'
-
-    train_dataset = data.load_giantsteps_key_dataset(
-        'data/giantsteps-mtg-key-dataset-augmented',
-        'feature_cache',
-        feature
-    )
-
-    training_files, val_files = train_dataset.random_split([0.8, 0.2])
-    training_set = data.load_data(
-        training_files,
-        use_augmented=True
-    )
-    val_set = data.load_data(
-        val_files,
-        use_augmented=False
-    )
-
-    if not no_dist_sampling:
-        l = [np.load(f) for f in training_files['targ'] if '.0.' in f]
-        targ_dist = np.bincount(np.hstack(l), minlength=24).astype(np.float)
-        targ_dist /= targ_dist.sum()
+    if data_type == 'giantsteps':
+        training_set, val_set, test_set, targ_dist = data.load_giantsteps(
+            'data', 'feature_cache', feature, not no_dist_sampling
+        )
+    elif data_type == 'billboard':
+        training_set, val_set, test_set, targ_dist = data.load_billboard(
+            'data', 'feature_cache', feature, not no_dist_sampling
+        )
+    elif data_type == 'all':
+        tr_gs, vl_gs, te_gs, targ_dist = data.load_giantsteps(
+            'data', 'feature_cache', feature, not no_dist_sampling
+        )
+        tr_bb, vl_bb, te_bb, targ_dist = data.load_billboard(
+            'data', 'feature_cache', feature, not no_dist_sampling
+        )
+        training_set = tr_gs + tr_bb
+        val_set = vl_gs + vl_bb
+        test_set = te_gs + te_bb
     else:
-        targ_dist = None
+        raise ValueError('Unknown data type: {}'.format(data_type))
 
     if combiner_type == 'avg':
         build_model = build_avg_model
+        learning_rate_schedule = {
+            0:   0.001,
+            # 100: 0.0001,
+            # 150: 0.00001,
+            # 200: 0.000001
+        }
     elif combiner_type == 'rnn':
         build_model = build_rnn_model
+        learning_rate_schedule = {
+            0:   0.0001,
+            30:  0.00001,
+            100: 0.000001,
+            150: 0.0000001
+        }
     else:
         raise ValueError('Unknown combiner type: {}'.format(combiner_type))
 
@@ -220,10 +222,17 @@ def main():
     y_hat = lnn.layers.get_output(model, deterministic=False)
     loss = tt.mean(lnn.objectives.categorical_crossentropy(y_hat, y),
                    dtype='floatX')
+
+    loss += 1e-4 * lnn.regularization.regularize_network_params(
+        model, lnn.regularization.l2)
+
     acc = tt.mean(lnn.objectives.categorical_accuracy(y_hat, y),
                   dtype='floatX')
     params = lnn.layers.get_all_params(model)
-    updates = lnn.updates.rmsprop(loss, params, learning_rate=0.001)
+    learning_rate = theano.shared(np.array(learning_rate_schedule[0],
+                                           dtype=theano.config.floatX))
+    # updates = lnn.updates.rmsprop(loss, params, learning_rate=learning_rate)
+    updates = lnn.updates.momentum(loss, params, learning_rate=learning_rate)
     train = theano.function(
         inputs=[X, y, m],
         outputs=[loss, acc],
@@ -256,28 +265,57 @@ def main():
             loss += l
             acc += a
             n_it += 1
+            batches.set_description('Loss: {:g}'.format(loss / n_it))
         return loss / n_it, acc / n_it
 
-    outputs = ['epoch', '     loss', '    accuracy',
-               '    validation loss', '    validation accuracy']
-
-    print ''.join(outputs)
+    print('{:>5s}{:>20s}{:>15s}{:>15s}{:>25s}{:>25s}'.format(
+        'epoch', 'learning rate', 'loss', 'accuracy', 'validation loss',
+        'validation accuracy')
+    )
 
     best_val_acc = -np.inf
+    train_log = []
+    patience = 20
+    best_params = None
     for epoch in tqdm.tqdm(range(n_epochs)):
+        if epoch in learning_rate_schedule:
+            learning_rate.set_value(learning_rate_schedule[epoch])
+
         train_loss, train_acc = iterate(train_it, train)
         val_loss, val_acc = iterate(val_it, test)
 
-        tqdm.tqdm.write('{:5d}\t{:4.6f}\t{:10.4f}\t{:13.6f}\t{:19.4f}'.format(
-            epoch, float(train_loss), float(train_acc), float(val_loss),
-            float(val_acc)))
+        tqdm.tqdm.write(
+            '{:>5d}{:>20.12f}{:>15.6f}{:>15.6f}{:>25.6f}{:>25.6f}'.format(
+                epoch, float(learning_rate.get_value()), float(train_loss),
+                float(train_acc), float(val_loss), float(val_acc))
+        )
 
         if val_acc > best_val_acc:
+            patience = 20
             best_val_acc = val_acc
+            best_params = lnn.layers.get_all_param_values(model)
             pickle.dump(
-                lnn.layers.get_all_param_values(model),
+                best_params,
                 open(join(exp_dir, 'best_model'), 'wb')
             )
+        else:
+            patience -= 1
+
+        if patience == 0:
+            tqdm.tqdm.write('Restarting with best...')
+            lnn.layers.set_all_param_values(model, best_params)
+            patience = 20
+            lr = learning_rate.get_value()
+            learning_rate.set_value(lr / 2.)
+
+        train_log.append({
+            'epoch': epoch,
+            'train_loss': float(train_loss),
+            'train_accuracy': float(train_acc),
+            'validation_loss': float(val_loss),
+            'validation_accuracy': float(val_acc)
+        })
+        yaml.dump(train_log, open(join(exp_dir, 'log'), 'w'))
 
     lnn.layers.set_all_param_values(
         model,
@@ -291,8 +329,8 @@ def main():
         open(join(exp_dir, 'test_results'), 'w')
     )
 
-    print 'Test Loss: {}'.format(test_loss)
-    print 'Test Accuracy: {}'.format(test_acc)
+    print('Test Loss: {}'.format(test_loss))
+    print('Test Accuracy: {}'.format(test_acc))
 
 
 if __name__ == '__main__':

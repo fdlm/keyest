@@ -1,3 +1,4 @@
+from __future__ import print_function
 import madmom as mm
 import numpy as np
 import dmgr
@@ -10,7 +11,7 @@ class SingleKeyMajMinTarget(object):
     def __init__(self):
         natural = zip(string.uppercase[:7], [0, 2, 3, 5, 7, 8, 10])
         sharp = map(lambda v: (v[0] + '#', (v[1] + 1) % 12), natural)
-        flat = map(lambda v: (v[0] + 'b', (v[1] - 1) % 12), natural)
+        flat = map(lambda v: (v[0] + 'B', (v[1] - 1) % 12), natural)
         self.root_note_map = dict(natural + sharp + flat)
 
     @property
@@ -149,6 +150,41 @@ def load_giantsteps_key_dataset(data_dir, feature_cache_dir, feature):
     )
 
 
+def load_billboard_key_dataset(data_dir, feature_cache_dir, feature):
+    if feature == 'lfs':
+        compute_features = LogFiltSpec(
+            frame_sizes=[8192],
+            num_bands=24,
+            fmin=65,
+            fmax=2100,
+            fps=5,
+            unique_filters=True
+        )
+    elif feature == 'dc':
+        compute_features = DeepChroma(
+            fps=5
+        )
+    elif feature == 'cnn':
+        compute_features = CnnChordFeatures(
+            fps=5
+        )
+    else:
+        raise ValueError('Invalid feature: {}'.format(feature))
+
+    compute_targets = SingleKeyMajMinTarget()
+
+    return dmgr.Dataset(
+        data_dir=data_dir,
+        feature_cache_dir=feature_cache_dir,
+        split_defs=[join(data_dir, 'splits', f)
+                    for f in ['eusipco2017_val.fold', 'eusipco2017_test.fold']],
+        source_ext='.flac',
+        gt_ext='.key',
+        compute_features=compute_features,
+        compute_targets=compute_targets
+    )
+
+
 def get_splits(dataset, val_fold, test_fold):
     train_split, val_split, test_split = dataset.fold_split(val_fold,
                                                             test_fold)
@@ -167,3 +203,79 @@ def load_data(files, use_augmented):
     return [(np.load(f[0]), np.load(f[1]))
             for f in zip(files['feat'], files['targ'])
             if use_augmented or '.0.' in f[0]]
+
+
+def load_giantsteps(data_dir, feature_cache_dir, feature, dist_sampling):
+
+    print('Loading GiantSteps Dataset...')
+
+    test_dataset = load_giantsteps_key_dataset(
+        join(data_dir, 'giantsteps-key-dataset'),
+        feature_cache_dir,
+        feature
+    )
+
+    test_set = load_data(
+        test_dataset.all_files(),
+        use_augmented=True  # no augmented files in there
+    )
+
+    print('Loading GiantSteps MTG Dataset...')
+
+    train_dataset = load_giantsteps_key_dataset(
+        join(data_dir, 'giantsteps-mtg-key-dataset-augmented'),
+        feature_cache_dir,
+        feature
+    )
+
+    training_files, val_files = train_dataset.random_split([0.8, 0.2])
+    training_set = load_data(
+        training_files,
+        use_augmented=True
+    )
+    val_set = load_data(
+        val_files,
+        use_augmented=False
+    )
+
+    if dist_sampling:
+        l = [np.load(f) for f in training_files['targ'] if '.0.' in f]
+        targ_dist = np.bincount(np.hstack(l), minlength=24).astype(np.float)
+        targ_dist /= targ_dist.sum()
+    else:
+        targ_dist = None
+
+    return training_set, val_set, test_set, targ_dist
+
+
+def load_billboard(data_dir, feature_cache_dir, feature, dist_sampling):
+
+    print('Loading Billboard Dataset..')
+
+    dataset = load_billboard_key_dataset(
+        join(data_dir, 'mcgill-billboard-augmented'),
+        feature_cache_dir,
+        feature
+    )
+
+    training_files, val_files, test_files = dataset.fold_split(0, 1)
+
+    training_set = load_data(
+        training_files,
+        use_augmented=True
+    )
+
+    val_set = load_data(
+        val_files,
+        use_augmented=False
+    )
+
+    test_set = load_data(
+        test_files,
+        use_augmented=False
+    )
+
+    print(len(training_set), len(val_set), len(test_set))
+
+    return training_set, val_set, test_set, None
+
