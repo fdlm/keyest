@@ -68,9 +68,10 @@ def main():
         return 1
 
     files = sys.argv[1:]
-    det_files = [f for f in files if splitext(f)[1] == '.txt']
-    ann_files = [mm.utils.match_file(f, files, '.txt', '.key')[0]
+    det_files = mm.utils.filter_files(files, '.key.txt')
+    ann_files = [mm.utils.match_file(f, files, '.key.txt', '.key')[0]
                  for f in det_files]
+
     assert len(ann_files) == len(det_files)
 
     results = OrderedDict([
