@@ -13,6 +13,7 @@ class SingleKeyMajMinTarget(object):
         sharp = map(lambda v: (v[0] + '#', (v[1] + 1) % 12), natural)
         flat = map(lambda v: (v[0] + 'B', (v[1] - 1) % 12), natural)
         self.root_note_map = dict(natural + sharp + flat)
+        self.note_root_map = {v: k for k, v in self.root_note_map.items()}
 
     @property
     def name(self):
@@ -228,7 +229,12 @@ def load_giantsteps(data_dir, feature_cache_dir, feature, dist_sampling):
         feature
     )
 
+    # make sure split is always the same
+    rnd_state = np.random.get_state()
+    np.random.seed(4711)
     training_files, val_files = train_dataset.random_split([0.8, 0.2])
+    np.random.set_state(rnd_state)
+
     training_set = load_data(
         training_files,
         use_augmented=True
@@ -274,8 +280,6 @@ def load_billboard(data_dir, feature_cache_dir, feature, dist_sampling):
         test_files,
         use_augmented=False
     )
-
-    print(len(training_set), len(val_set), len(test_set))
 
     return training_set, val_set, test_set, None
 

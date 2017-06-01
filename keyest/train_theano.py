@@ -28,6 +28,8 @@ Options:
     --exp_id=S  output directory [default: last_exp]
     --feature=S  feature to use (lfs/dc) [default: lfs]
     --data=S  data setup (giantsteps/billboard) [default: giantsteps]
+    --patience=I  number of steps to wait until lr is reduced [default: 20]
+    --init_lr=F  initial learn rate [default: 0.001]
 """
 
 
@@ -162,6 +164,8 @@ def main():
     exp_id = args['--exp_id']
     feature = args['--feature']
     data_type = args['--data']
+    init_patience = int(args['--patience'])
+    init_learn_rate = float(args['--init_lr'])
 
     print(args)
 
@@ -191,10 +195,14 @@ def main():
     else:
         raise ValueError('Unknown data type: {}'.format(data_type))
 
+    print('#Train: {}\n#Val: {}\n#Test: {}'.format(
+        len(training_set), len(val_set), len(test_set))
+    )
+
     if combiner_type == 'avg':
         build_model = build_avg_model
         learning_rate_schedule = {
-            0:   0.001,
+            0: init_learn_rate,
             # 100: 0.0001,
             # 150: 0.00001,
             # 200: 0.000001
@@ -275,7 +283,7 @@ def main():
 
     best_val_acc = -np.inf
     train_log = []
-    patience = 20
+    patience = init_patience
     best_params = None
     for epoch in tqdm.tqdm(range(n_epochs)):
         if epoch in learning_rate_schedule:
@@ -291,7 +299,7 @@ def main():
         )
 
         if val_acc > best_val_acc:
-            patience = 20
+            patience = init_patience
             best_val_acc = val_acc
             best_params = lnn.layers.get_all_param_values(model)
             pickle.dump(
@@ -304,7 +312,7 @@ def main():
         if patience == 0:
             tqdm.tqdm.write('Restarting with best...')
             lnn.layers.set_all_param_values(model, best_params)
-            patience = 20
+            patience = init_patience
             lr = learning_rate.get_value()
             learning_rate.set_value(lr / 2.)
 
@@ -331,7 +339,6 @@ def main():
 
     print('Test Loss: {}'.format(test_loss))
     print('Test Accuracy: {}'.format(test_acc))
-
 
 if __name__ == '__main__':
     main()
