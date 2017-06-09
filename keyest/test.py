@@ -2,7 +2,7 @@ from __future__ import print_function
 
 import os.path
 import pickle
-from os.path import join, basename, splitext
+from os.path import join, basename
 
 import numpy as np
 import theano
@@ -46,9 +46,9 @@ KEYS = ['A major',
 
 def create_key_estimator(exp_dir, config, feature_size):
     if config['--combiner_type'] == 'avg':
-        from train_theano import build_avg_model as build_model
+        from train import build_avg_model as build_model
     elif config['--combiner_type'] == 'rnn':
-        from train_theano import build_rnn_model as build_model
+        from train import build_rnn_model as build_model
     else:
         raise ValueError('Unknown combiner model: {}'.format(
             config['--combiner_type']))

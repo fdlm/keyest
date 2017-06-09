@@ -1,13 +1,18 @@
 import sys
-from collections import OrderedDict
 from glob import glob
+from itertools import combinations
+from scipy.stats import wilcoxon, binom_test
+
 import madmom as mm
 
-from os.path import splitext
+from docopt import docopt
+from collections import OrderedDict, Counter
+from os.path import splitext, basename, join
 
 USAGE = """
 Usage:
-  eval.py <files>...
+  eval.py single <files>...
+  eval.py compare <pattern> <gt_dir> <directories>...
 """
 
 
@@ -39,16 +44,9 @@ def error_type(ref_key_class, pred_key_class):
 
     if pred_root == ref_root and pred_mode == ref_mode:
         return 'correct', 1.0
-    # correct, but pessimistic
-    # if pred_mode == ref_mode and ((pred_root - ref_root) % 12 == 7):
-    #     return 'fifth', 0.5
-    # if pred_mode == ref_mode and ((pred_root - ref_root) % 12 == 5):
-    #     return 'fifth', 0.5
-
-    # wrong, but for the sake of comparison
-    if (pred_root - ref_root) % 12 == 7:
+    if pred_mode == ref_mode and ((pred_root - ref_root) % 12 == 7):
         return 'fifth', 0.5
-    if (pred_root - ref_root) % 12 == 5:
+    if pred_mode == ref_mode and ((pred_root - ref_root) % 12 == 5):
         return 'fifth', 0.5
     if (ref_mode == major and pred_mode != ref_mode and (
                 (pred_root - ref_root) % 12 == 9)):
@@ -62,37 +60,83 @@ def error_type(ref_key_class, pred_key_class):
         return 'error', 0.0
 
 
-def main():
-    if len(sys.argv) < 2:
-        print USAGE
-        return 1
-
-    files = sys.argv[1:]
-    det_files = mm.utils.filter_files(files, '.key.txt')
-    ann_files = [mm.utils.match_file(f, files, '.key.txt', '.key')[0]
-                 for f in det_files]
-
-    assert len(ann_files) == len(det_files)
-
-    results = OrderedDict([
-        ('correct', 0.0),
-        ('fifth', 0.0),
-        ('relative', 0.0),
-        ('parallel', 0.0),
-        ('error', 0.0),
-        ('weighted', 0.0)
-    ])
-
+def collect_results(ann_files, det_files):
+    results = dict(song=[], error=[], weight=[])
     for ann_f, det_f in zip(ann_files, det_files):
         ann_key = load_key(ann_f)
         det_key = load_key(det_f)
         error, weight = error_type(ann_key, det_key)
-        results[error] += 1.
-        results['weighted'] += weight
+        results['song'].append(splitext(basename(ann_f))[0])
+        results['error'].append(error)
+        results['weight'].append(weight)
+    return results
 
-    print('Evaluated {} files.'.format(len(det_files)))
-    for k, v in results.items():
-        print('{:>15s} = {:5.2f}'.format(k, 100. * v / len(ann_files)))
+
+def average_results(results):
+    n = len(results['song'])
+    c = Counter(results['error'])
+
+    return OrderedDict([
+        ('correct', float(c['correct']) / n),
+        ('fifth', float(c['fifth']) / n),
+        ('relative', float(c['relative']) / n),
+        ('parallel', float(c['parallel']) / n),
+        ('error', float(c['error']) / n),
+        ('weighted', sum(results['weight']) / n)
+    ])
+
+
+def to_ranks(weights):
+    ranks = [1.0, 0.5, 0.3, 0.2, 0.0]
+    return [ranks.index(w) + 1 for w in weights]
+
+
+def main():
+    args = docopt(USAGE)
+
+    if args['single']:
+        files = sys.argv[1:]
+        det_files = mm.utils.filter_files(files, '.key.txt')
+        ann_files = [mm.utils.match_file(f, files, '.key.txt', '.key')[0]
+                     for f in det_files]
+        assert len(ann_files) == len(det_files)
+
+        results = average_results(collect_results(ann_files, det_files))
+
+        print('Evaluated {} files.'.format(len(det_files)))
+        for k, v in results.items():
+            print('{:>15s} = {:5.2f}'.format(k, 100. * v))
+    else:
+        det_files = {}
+        for det_dir in args['<directories>']:
+            name = det_dir.split('/')[-1]
+            if name == 'predictions':
+                name = det_dir.split('/')[-2]
+            df = glob(join(det_dir, args['<pattern>'] + '.key.txt'))
+            df.sort()
+            det_files[name] = df
+
+        ann_files = mm.utils.search_files(args['<gt_dir>'], '.key')
+        ann_files = [mm.utils.match_file(f, ann_files, '.key.txt', '.key')[0]
+                     for f in df]
+
+        for name in det_files:
+            assert len(ann_files) == len(det_files[name])
+
+        results = {name: collect_results(ann_files, det_files[name])
+                   for name in det_files}
+        avg_res = {name: average_results(results[name])
+                   for name in results}
+
+        for n1, n2 in combinations(results.keys(), 2):
+            r1 = to_ranks(results[n1]['weight'])
+            r2 = to_ranks(results[n2]['weight'])
+            print '{} vs. {}: {:5.2f} / {:5.2f}, p = {:.3f}'.format(
+                n1, n2,
+                avg_res[n1]['weighted'] * 100, avg_res[n2]['weighted'] * 100,
+                wilcoxon(r1, r2).pvalue
+            )
+
 
 if __name__ == '__main__':
     main()
