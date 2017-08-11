@@ -30,9 +30,22 @@ def load(datasets, augmented=True, n_processes=1):
             views=[Views.audio, Views.key],
             name=gs_train_name
         )
-        gs_mtg_tr, gs_mtg_va = gs_mtg.random_subsets(
+
+        gs_mtg_nonaug = gs_mtg.filter(
+            lambda piece: '.0' in piece
+        )
+
+        gs_mtg_nonaug_tr, gs_mtg_va = gs_mtg_nonaug.random_subsets(
             [0.8, 0.2], np.random.RandomState(4711)
         )
+
+        def piece_id(p):
+            return p.split('.')[0]
+        val_piece_ids = set(piece_id(p) for p in gs_mtg_va.pieces.keys())
+        gs_mtg_tr = gs_mtg.filter(
+            lambda piece: piece_id(piece) not in val_piece_ids
+        )
+
         train_datasets.append(gs_mtg_tr)
         val_datasets.append(gs_mtg_va)
     if 'billboard' in datasets:
@@ -75,8 +88,7 @@ def load(datasets, augmented=True, n_processes=1):
     trg_repr = SingleKeyMajMin()
 
     train_dataset = sum(train_datasets, Dataset())
-    val_dataset = sum(val_datasets, Dataset())
-    val_dataset.filter(
+    val_dataset = sum(val_datasets, Dataset()).filter(
         lambda p: not augmented or '.0' in p
     )
     test_dataset = sum(test_datasets, Dataset())
