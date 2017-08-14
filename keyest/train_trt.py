@@ -112,7 +112,7 @@ def main():
         max_history=3)
     checkpoint_on_improvement = trt.training.ImprovementTrigger(
         [model_checkpoints],
-        observed='acc',
+        observed='val_acc',
         compare=operator.gt)
 
     print(colored('Training:\n', color='blue'))

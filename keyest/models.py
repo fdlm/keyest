@@ -100,7 +100,7 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
                  feature_shape,
                  n_layers=5,
                  n_filters=8,
-                 filter_size=13,
+                 filter_size=5,
                  dropout=0.0,
                  embedding_size=48,
                  n_epochs=100,
@@ -131,7 +131,6 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
             net = Conv2DLayer(net, num_filters=n_filters,
                               filter_size=filter_size, pad='same',
                               nonlinearity=elu, W=HeNormal())
-            net = batch_norm(net)
             if dropout > 0.:
                 net = dropout_channels(net, p=dropout)
 
