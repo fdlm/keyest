@@ -4,7 +4,7 @@ import lasagne
 import theano
 import numpy as np
 import trattoria
-from functools import partial
+import operator
 from abc import abstractmethod, abstractproperty
 from lasagne.nonlinearities import softmax, elu
 from lasagne.layers import (DenseLayer, InputLayer, dropout_channels,
@@ -105,6 +105,7 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
                  embedding_size=48,
                  n_epochs=100,
                  learning_rate=0.001,
+                 patience=10,
                  l2=1e-4):
 
         self._hypers = dict(
@@ -115,9 +116,11 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
             embedding_size=embedding_size,
             n_epochs=n_epochs,
             learning_rate=learning_rate,
-            l2=l2
+            l2=l2,
+            patience=patience
         )
 
+        self.patience = patience
         self.l2 = l2
         self.learning_rate = theano.shared(np.float32(learning_rate),
                                            allow_downcast=True)
@@ -165,9 +168,11 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
     @property
     def callbacks(self):
         learn_rate_halving = trattoria.schedules.PatienceMult(
-            self.learning_rate, factor=0.5, observe='val_loss', patience=10)
+            self.learning_rate, factor=0.5, observe='val_acc',
+            patience=self.patience, compare=operator.gt)
         parameter_reset = trattoria.schedules.WarmRestart(
-            self, observe='val_loss', patience=10)
+            self, observe='val_acc', patience=self.patience,
+            compare=operator.gt)
         return [learn_rate_halving, parameter_reset]
 
     @property
@@ -189,3 +194,72 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
             shuffle=False,
             fill_last=False,
         )
+
+
+class RandomSnippet:
+
+    def __init__(self, snippet_length):
+        self.snippet_length = snippet_length
+
+    def __call__(self, batch_iterator):
+        for data, mask, target in batch_iterator:
+            data_snippet = np.empty(
+                (data.shape[0], self.snippet_length) + data.shape[2:],
+                dtype=data.dtype)
+
+            mask_snippet = np.empty((mask.shape[0], self.snippet_length),
+                                    dtype=mask.dtype)
+
+            for i in range(len(data)):
+                dlen = np.flatnonzero(mask[i])[-1]
+                start = np.random.randint(0, dlen - self.snippet_length)
+                end = start + self.snippet_length
+                data_snippet[i] = data[i, start:end, ...]
+                mask_snippet[i] = mask[i, start:end]
+
+            yield data_snippet, mask_snippet, target
+
+
+class CenterSnippet:
+
+    def __init__(self, snippet_length):
+        self.snippet_length = snippet_length
+
+    def __call__(self, batch_iterator):
+        for data, mask, target in batch_iterator:
+            data_snippet = np.empty(
+                (data.shape[0], self.snippet_length) + data.shape[2:],
+                dtype=data.dtype)
+
+            mask_snippet = np.empty((mask.shape[0], self.snippet_length),
+                                    dtype=mask.dtype)
+
+            for i in range(len(data)):
+                dlen = np.flatnonzero(mask[i])[-1]
+                start = dlen / 2 - self.snippet_length / 2
+                end = start + self.snippet_length
+                data_snippet[i] = data[i, start:end, ...]
+                mask_snippet[i] = mask[i, start:end]
+
+            yield data_snippet, mask_snippet, target
+
+
+class Eusipco2017Snippet(Eusipco2017):
+
+    def __init__(self, snippet_length=100, **kwargs):
+        super(Eusipco2017Snippet, self).__init__(**kwargs)
+        self._hypers['snippet_length'] = snippet_length
+        self.snippet_length = snippet_length
+
+    def train_iterator(self, data):
+        return trattoria.iterators.AugmentedIterator(
+            super(Eusipco2017Snippet, self).train_iterator(data),
+            RandomSnippet(snippet_length=self.snippet_length)
+        )
+
+    def test_iterator(self, data):
+        return trattoria.iterators.AugmentedIterator(
+            super(Eusipco2017Snippet, self).test_iterator(data),
+            CenterSnippet(snippet_length=self.snippet_length * 3)
+        )
+
