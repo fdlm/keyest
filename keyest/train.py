@@ -3,18 +3,17 @@ from __future__ import print_function
 import operator
 import os
 import shutil
-from os.path import join
+from os.path import join, basename
 
-import numpy as np
 import yaml
 from docopt import docopt
 from termcolor import colored
-from tqdm import tqdm
 
 import data
 import models
 import trattoria as trt
 from config import EXPERIMENT_ROOT
+from test import test
 
 
 USAGE = """
@@ -30,12 +29,6 @@ Options:
     --out=<S>  Experiment output directory (default is model name)
     --force  Overwrite experiment output directory if it already exists.
 """
-
-
-KEYS = ['A major', 'Bb major', 'B major', 'C major', 'Db major', 'D major',
-        'Eb major', 'E major', 'F major', 'F# major', 'G major', 'Ab major',
-        'A minor', 'Bb minor', 'B minor', 'C minor', 'C# minor', 'D minor',
-        'D# minor', 'E minor', 'F minor', 'F# minor', 'G minor', 'G# minor']
 
 
 class Args(object):
@@ -69,7 +62,7 @@ def main():
     # Load data and build model
     # -------------------------
     if args.data == 'all':
-        ds = 'giantsteps,billboard'
+        ds = 'giantsteps,billboard,musicnet,cmdb'
     else:
         ds = args.data
     train_set, val_set, test_set = data.load(
@@ -135,19 +128,14 @@ def main():
 
     # load best parameters
     model.load(model_checkpoints.history[-1])
+    os.symlink(basename(model_checkpoints.history[-1]),
+               join(experiment_dir, 'best_model.pkl'))
 
     # -------------------
     # Compute predictions
     # -------------------
     print(colored('\nApplying on Test Set:\n', color='blue'))
-    for piece in tqdm(test_set.datasources, desc='Predicting'):
-        piece_data = piece[:][0]
-        mask = np.ones((1, piece_data.shape[1]), dtype=np.float32)
-        predictions = model.process(piece_data, mask)
-        pred_file = join(experiment_dir, piece.name)
-        np.save(pred_file, predictions)
-        with open(join(experiment_dir, piece.name + '.key.txt', 'w')) as f:
-            f.write(KEYS[predictions.argmax()])
+    test(model, test_set, experiment_dir)
 
 
 if __name__ == '__main__':
