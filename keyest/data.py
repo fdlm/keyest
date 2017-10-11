@@ -32,7 +32,7 @@ def load(datasets, augmented=True, n_processes=1):
         )
 
         gs_mtg_nonaug = gs_mtg.filter(
-            lambda piece: '.0' in piece
+            lambda p: not augmented or '.0' in p
         )
 
         gs_mtg_nonaug_tr, gs_mtg_va = gs_mtg_nonaug.random_subsets(
@@ -66,9 +66,66 @@ def load(datasets, augmented=True, n_processes=1):
         bb_va = bb.fold_subset('eusipco2017', 'val')
         bb_tr = bb.subtract(bb_te).subtract(bb_va)
 
+        if augmented:
+            # do not use pitch shifted songs in validation and test
+            bb_te = bb_te.filter(lambda piece: '.0' in piece)
+            bb_va = bb_va.filter(lambda piece: '.0' in piece)
+
         train_datasets.append(bb_tr)
         val_datasets.append(bb_va)
         test_datasets.append(bb_te)
+    if 'musicnet' in datasets:
+        if augmented:
+            mn_dir = 'musicnet-augmented'
+            mn_name = 'MusicNet (Augmented)'
+        else:
+            mn_dir = 'musicnet'
+            mn_name = 'MusicNet'
+
+        mn = Dataset.from_directory(
+            join(DATASET_DIR, mn_dir),
+            views=[Views.audio, Views.key],
+            name=mn_name
+        )
+
+        mn_te = mn.fold_subset('random_piecewise', 'test')
+        mn_va = mn.fold_subset('random_piecewise', 'val')
+        mn_tr = mn.subtract(mn_te).subtract(mn_va)
+
+        if augmented:
+            # do not use pitch shifted songs in validation and test
+            mn_te = mn_te.filter(lambda piece: '.0' in piece)
+            mn_va = mn_va.filter(lambda piece: '.0' in piece)
+
+        train_datasets.append(mn_tr)
+        val_datasets.append(mn_va)
+        test_datasets.append(mn_te)
+    if 'cmdb' in datasets:
+        if augmented:
+            cmdb_dir = 'classical_music_database-augmented'
+            cmdb_name = 'Classical Music Database (Augmented)'
+        else:
+            cmdb_dir = 'classical_music_database'
+            cmdb_name = 'Classical Music Database'
+
+        cmdb = Dataset.from_directory(
+            join(DATASET_DIR, cmdb_dir),
+            views=[Views.audio, Views.key],
+            name=cmdb_name
+        )
+
+        cmdb_te = cmdb.fold_subset('random', 'test')
+        cmdb_va = cmdb.fold_subset('random', 'val')
+        cmdb_tr = cmdb.subtract(cmdb_te).subtract(cmdb_va)
+
+        if augmented:
+            # do not use pitch shifted songs in validation and test
+            cmdb_te = cmdb_te.filter(lambda piece: '.0' in piece)
+            cmdb_va = cmdb_va.filter(lambda piece: '.0' in piece)
+
+        train_datasets.append(cmdb_tr)
+        val_datasets.append(cmdb_va)
+        test_datasets.append(cmdb_te)
 
     # TODO: Fix combination of cached and multiprocessed representation
     # src_repr = auds.representations.make_parallel(
@@ -88,9 +145,10 @@ def load(datasets, augmented=True, n_processes=1):
     trg_repr = SingleKeyMajMin()
 
     train_dataset = sum(train_datasets, Dataset())
-    val_dataset = sum(val_datasets, Dataset()).filter(
-        lambda p: not augmented or '.0' in p
-    )
+    val_dataset = sum(val_datasets, Dataset())
+    # val_dataset = sum(val_datasets, Dataset()).filter(
+    #     lambda p: not augmented or '.0' in p
+    # )
     test_dataset = sum(test_datasets, Dataset())
 
     def create_datasource(dataset):

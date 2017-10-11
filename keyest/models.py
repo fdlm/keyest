@@ -8,12 +8,15 @@ import operator
 from abc import abstractmethod, abstractproperty
 from lasagne.nonlinearities import softmax, elu
 from lasagne.layers import (DenseLayer, InputLayer, dropout_channels,
-                            ReshapeLayer, Conv2DLayer, batch_norm, MergeLayer)
+                            ReshapeLayer, Conv2DLayer, batch_norm, MergeLayer,
+                            MaxPool2DLayer, GlobalPoolLayer, NonlinearityLayer,
+                            FlattenLayer)
 from lasagne.init import HeNormal
 from trattoria.objectives import average_categorical_crossentropy
 from trattoria.nets import NeuralNetwork
 
 try:
+    from lasagne.layers.dnn import MaxPool2DDNNLayer as MaxPool2DLayer
     from lasagne.layers.dnn import Conv2DDNNLayer as Conv2DLayer
     from lasagne.layers.dnn import batch_norm_dnn as batch_norm
 except ImportError:
@@ -137,6 +140,7 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
             if dropout > 0.:
                 net = dropout_channels(net, p=dropout)
 
+        net = lasagne.layers.dimshuffle(net, (0, 2, 1, 3))
         net = ReshapeLayer(net, (n_batch * n_time_steps,
                                  n_filters * feature_shape[-1]))
         net = DenseLayer(net, num_units=embedding_size, nonlinearity=elu)
@@ -154,7 +158,6 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
 
     def loss(self, predictions, targets):
         return average_categorical_crossentropy(predictions, targets)
-                                                # mask=self.mask)
 
     @property
     def hypers(self):
@@ -190,58 +193,58 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
     def test_iterator(self, data):
         return trattoria.iterators.SequenceClassificationIterator(
             data,
-            batch_size=8,
+            batch_size=1,
             shuffle=False,
             fill_last=False,
         )
 
 
-class RandomSnippet:
+class Snippet(object):
 
     def __init__(self, snippet_length):
         self.snippet_length = snippet_length
 
+    @abstractmethod
+    def snippet_start(self, data, data_length):
+        pass
+
     def __call__(self, batch_iterator):
         for data, mask, target in batch_iterator:
-            data_snippet = np.empty(
+            data_snippet = np.zeros(
                 (data.shape[0], self.snippet_length) + data.shape[2:],
                 dtype=data.dtype)
 
-            mask_snippet = np.empty((mask.shape[0], self.snippet_length),
+            mask_snippet = np.zeros((mask.shape[0], self.snippet_length),
                                     dtype=mask.dtype)
 
             for i in range(len(data)):
                 dlen = np.flatnonzero(mask[i])[-1]
-                start = np.random.randint(0, dlen - self.snippet_length)
+                start = self.snippet_start(data[i], dlen)
                 end = start + self.snippet_length
-                data_snippet[i] = data[i, start:end, ...]
-                mask_snippet[i] = mask[i, start:end]
+                ds = data[i, start:end, ...]
+                ms = mask[i, start:end]
+                data_snippet[i, :len(ds)] = ds
+                mask_snippet[i, :len(ms)] = ms
 
             yield data_snippet, mask_snippet, target
 
 
-class CenterSnippet:
+class CenterSnippet(Snippet):
 
-    def __init__(self, snippet_length):
-        self.snippet_length = snippet_length
+    def snippet_start(self, data, data_length):
+        return max(0, data_length / 2 - self.snippet_length / 2)
 
-    def __call__(self, batch_iterator):
-        for data, mask, target in batch_iterator:
-            data_snippet = np.empty(
-                (data.shape[0], self.snippet_length) + data.shape[2:],
-                dtype=data.dtype)
 
-            mask_snippet = np.empty((mask.shape[0], self.snippet_length),
-                                    dtype=mask.dtype)
+class RandomSnippet(Snippet):
 
-            for i in range(len(data)):
-                dlen = np.flatnonzero(mask[i])[-1]
-                start = dlen / 2 - self.snippet_length / 2
-                end = start + self.snippet_length
-                data_snippet[i] = data[i, start:end, ...]
-                mask_snippet[i] = mask[i, start:end]
+    def snippet_start(self, data, data_length):
+        return np.random.randint(0, max(1, data_length - self.snippet_length))
 
-            yield data_snippet, mask_snippet, target
+
+class BeginningSnippet(Snippet):
+
+    def snippet_start(self, data, data_length):
+        return 0
 
 
 class Eusipco2017Snippet(Eusipco2017):
@@ -257,9 +260,147 @@ class Eusipco2017Snippet(Eusipco2017):
             RandomSnippet(snippet_length=self.snippet_length)
         )
 
-    def test_iterator(self, data):
+
+def remove_mask(batch_iterator):
+    for d, m, t in batch_iterator:
+        yield d, t
+
+
+
+class AllConv(NeuralNetwork, TrainableModel):
+
+    def __init__(self,
+                 feature_shape,
+                 n_layers=5,
+                 n_filters=8,
+                 filter_size=5,
+                 dropout=0.0,
+                 embedding_size=48,
+                 n_epochs=100,
+                 learning_rate=0.001,
+                 patience=10,
+                 l2=1e-4,
+                 snippet_length=100):
+
+        self._hypers = dict(
+            n_layers=n_layers,
+            n_filters=n_filters,
+            filter_size=filter_size,
+            dropout=dropout,
+            embedding_size=embedding_size,
+            n_epochs=n_epochs,
+            learning_rate=learning_rate,
+            l2=l2,
+            patience=patience,
+            snippet_length=snippet_length
+        )
+
+        self.snippet_length = snippet_length
+        self.patience = patience
+        self.l2 = l2
+        self.learning_rate = theano.shared(np.float32(learning_rate),
+                                           allow_downcast=True)
+
+        net = InputLayer((None,) + feature_shape)
+        n_batch, n_time_steps, _ = net.input_var.shape
+        net = ReshapeLayer(net, (n_batch, 1, n_time_steps, feature_shape[-1]))
+
+        nonlin = lasagne.nonlinearities.elu
+        init_conv = lasagne.init.HeNormal
+        n_filt = 4
+
+        # --- conv layers ---
+        net = Conv2DLayer(net, num_filters=n_filt, filter_size=5, stride=1, pad=2, W=init_conv(), nonlinearity=nonlin)
+        net = batch_norm(net)
+        net = Conv2DLayer(net, num_filters=n_filt, filter_size=3, stride=1, pad=1, W=init_conv(), nonlinearity=nonlin)
+        net = batch_norm(net)
+        net = MaxPool2DLayer(net, pool_size=2)
+        # net = dropout_channels(net, p=0.3)
+
+        net = Conv2DLayer(net, num_filters=n_filt * 2, filter_size=3, stride=1, pad=1, W=init_conv(), nonlinearity=nonlin)
+        net = batch_norm(net)
+        net = Conv2DLayer(net, num_filters=n_filt * 2, filter_size=3, stride=1, pad=1, W=init_conv(), nonlinearity=nonlin)
+        net = MaxPool2DLayer(net, pool_size=2)
+        # net = dropout_channels(net, p=0.3)
+
+        net = Conv2DLayer(net, num_filters=n_filt * 4, filter_size=3, stride=1, pad=1, W=init_conv(), nonlinearity=nonlin)
+        net = batch_norm(net)
+        net = Conv2DLayer(net, num_filters=n_filt * 4, filter_size=3, stride=1, pad=1, W=init_conv(), nonlinearity=nonlin)
+        net = batch_norm(net)
+        net = Conv2DLayer(net, num_filters=n_filt * 4, filter_size=3, stride=1, pad=1, W=init_conv(), nonlinearity=nonlin)
+        net = batch_norm(net)
+        net = Conv2DLayer(net, num_filters=n_filt * 4, filter_size=3, stride=1, pad=1, W=init_conv(), nonlinearity=nonlin)
+        net = batch_norm(net)
+        net = MaxPool2DLayer(net, pool_size=2)
+        # net = dropout_channels(net, p=0.3)
+
+        net = Conv2DLayer(net, num_filters=n_filt * 8, filter_size=3, pad=1, W=init_conv(), nonlinearity=nonlin)
+        net = batch_norm(net)
+        # net = dropout_channels(net, p=0.5)
+        net = Conv2DLayer(net, num_filters=n_filt * 8, filter_size=1, pad=0, W=init_conv(), nonlinearity=nonlin)
+        net = batch_norm(net)
+        # net = dropout_channels(net, p=0.5)
+
+        # --- feed forward part ---
+        net = Conv2DLayer(net, num_filters=24, filter_size=1, W=init_conv(),
+                          nonlinearity=nonlin)
+        net = batch_norm(net)
+        net = GlobalPoolLayer(net)
+        net = FlattenLayer(net)
+        net = NonlinearityLayer(net, nonlinearity=lasagne.nonlinearities.softmax)
+        # net = NonlinearityLayer(net, nonlinearity=temperature_softmax)
+
+        y = tt.fmatrix('y')
+        super(AllConv, self).__init__(net, y)
+
+    def update(self, loss, params):
+        return lasagne.updates.adam(loss, params, learning_rate=0.001)
+
+    def loss(self, predictions, targets):
+        return average_categorical_crossentropy(predictions, targets)
+
+    @property
+    def hypers(self):
+        return self._hypers
+
+    @property
+    def regularizers(self):
+        return [lasagne.regularization.regularize_layer_params(
+            self.net, lasagne.regularization.l2) * self.l2]
+
+    @property
+    def callbacks(self):
+        learn_rate_halving = trattoria.schedules.PatienceMult(
+            self.learning_rate, factor=0.5, observe='val_acc',
+            patience=self.patience, compare=operator.gt)
+        parameter_reset = trattoria.schedules.WarmRestart(
+            self, observe='val_acc', patience=self.patience,
+            compare=operator.gt)
+        return [learn_rate_halving, parameter_reset]
+
+    @property
+    def observables(self):
+        return {'lr': lambda *args: self.learning_rate}
+
+    def train_iterator(self, data):
+        it = trattoria.iterators.SequenceClassificationIterator(
+            data,
+            batch_size=128,
+            shuffle=True,
+            fill_last=True,
+        )
         return trattoria.iterators.AugmentedIterator(
-            super(Eusipco2017Snippet, self).test_iterator(data),
-            CenterSnippet(snippet_length=self.snippet_length * 3)
+            it, remove_mask, RandomSnippet(snippet_length=self.snippet_length),
+        )
+
+    def test_iterator(self, data):
+        it = trattoria.iterators.SequenceClassificationIterator(
+            data,
+            batch_size=128,
+            shuffle=False,
+            fill_last=False,
+        )
+        return trattoria.iterators.AugmentedIterator(
+            it, remove_mask, CenterSnippet(snippet_length=self.snippet_length * 3),
         )
 

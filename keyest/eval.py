@@ -24,9 +24,9 @@ KEY_TO_SEMITONE = {'c': 0, 'c#': 1, 'db': 1, 'd': 2, 'd#': 3, 'eb': 3, 'e': 4,
 def load_key(key_file):
     tonic, mode = open(key_file).read().strip().split()
     key_class = KEY_TO_SEMITONE[tonic.lower()]
-    if mode == 'minor':
+    if mode in ['minor', 'min']:
         key_class += 12
-    elif mode == 'major':
+    elif mode in ['major', 'maj']:
         key_class += 0
     else:
         raise ValueError(mode)
