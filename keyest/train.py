@@ -1,6 +1,7 @@
 from __future__ import print_function
 
 import operator
+import pickle
 import os
 import shutil
 from os.path import join, basename
@@ -130,6 +131,11 @@ def main():
     model.load(model_checkpoints.history[-1])
     os.symlink(basename(model_checkpoints.history[-1]),
                join(experiment_dir, 'best_model.pkl'))
+    # create madmom neural network processor if possible
+    if hasattr(model, 'to_madmom_processor'):
+        pickle.dump(model.to_madmom_processor(),
+                    join(experiment_dir, 'best_model_madmom.pkl'),
+                    protocol=pickle.HIGHEST_PROTOCOL)
 
     # -------------------
     # Compute predictions

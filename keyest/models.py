@@ -198,6 +198,29 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
             fill_last=False,
         )
 
+    def to_madmom_procesosor(self, params=None):
+        from madmom.ml.nn.layers import (ConvolutionalLayer, FeedForwardLayer,
+                                         AverageLayer, PadLayer,
+                                         TransposeLayer, ReshapeLayer)
+        from madmom.ml.nn.activations import elu, softmax
+        from madmom.ml.nn import NeuralNetwork
+
+        layers = []
+        p = params or self.get_params()
+        for _ in range(self.hypers['n_layers']):
+            layers.append(PadLayer(pad=self.hypers['filter_size'] // 2))
+            layers.append(ConvolutionalLayer(
+                p[0].transpose(1, 0, 2, 3)[:, :, ::-1, ::-1], p[1],
+                pad='valid', activation_fn=elu))
+            del p[:2]
+        layers.append(TransposeLayer((0, 2, 1)))
+        layers.append(ReshapeLayer((-1, 105 * self.hypers['n_filters'])))
+        layers.append(FeedForwardLayer(p[0], p[1], activation_fn=elu))
+        del p[:2]
+        layers.append(AverageLayer(axis=0, keepdims=True))
+        layers.append(FeedForwardLayer(p[0], p[1], activation_fn=softmax))
+        return NeuralNetwork(layers)
+
 
 class Snippet(object):
 
