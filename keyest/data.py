@@ -4,12 +4,26 @@ import numpy as np
 from os.path import join
 import auds
 from auds.datasets import Dataset, Views
-from auds.representations import SingleKeyMajMin, LogFiltSpec
 from trattoria.data import DataSource, AggregatedDataSource
-from config import DATASET_DIR, CACHE_DIR
+from config import DATASET_DIR
 
 
-def load(datasets, augmented=True, n_processes=1):
+def create_datasources(datasets, representations, n_processes=1):
+    if n_processes > 1:
+        representations = [auds.representations.make_parallel(r, n_processes)
+                           for r in representations]
+
+    def datasource(dataset):
+        ds_reps = [r(dataset) for r in representations]
+        ads = AggregatedDataSource(
+            [DataSource(data=[dsr[p] for dsr in ds_reps], name=p)
+             for p in ds_reps[0]])
+        return ads
+
+    return [datasource(ds) for ds in datasets]
+
+
+def load(datasets, augmented=True):
     train_datasets = []
     val_datasets = []
     test_datasets = []
@@ -127,41 +141,9 @@ def load(datasets, augmented=True, n_processes=1):
         val_datasets.append(cmdb_va)
         test_datasets.append(cmdb_te)
 
-    # TODO: Fix combination of cached and multiprocessed representation
-    # src_repr = auds.representations.make_parallel(
-    src_repr = auds.representations.make_cached(
-    #     auds.representations.make_cached(
-            LogFiltSpec(
-                frame_size=8192,
-                fft_size=None,
-                n_bands=24,
-                fmin=65,
-                fmax=2100,
-                fps=5,
-                unique_filters=True,
-                sample_rate=44100
-            ), CACHE_DIR)
-        # n_processes=n_processes)
-    trg_repr = SingleKeyMajMin()
-
     train_dataset = sum(train_datasets, Dataset())
     val_dataset = sum(val_datasets, Dataset())
-    # val_dataset = sum(val_datasets, Dataset()).filter(
-    #     lambda p: not augmented or '.0' in p
-    # )
     test_dataset = sum(test_datasets, Dataset())
 
-    def create_datasource(dataset):
-        sr = src_repr(dataset)
-        tr = trg_repr(dataset)
-        return AggregatedDataSource(
-            [DataSource(data=[sr[p][np.newaxis, ...], tr[p][np.newaxis, ...]],
-                        name=p)
-             for p in sr])
-
-    train_data = create_datasource(train_dataset)
-    val_data = create_datasource(val_dataset)
-    test_data = create_datasource(test_dataset)
-
-    return train_data, val_data, test_data
+    return train_dataset, val_dataset, test_dataset
 

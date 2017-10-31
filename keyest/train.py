@@ -66,18 +66,21 @@ def main():
         ds = 'giantsteps,billboard,musicnet,cmdb'
     else:
         ds = args.data
-    train_set, val_set, test_set = data.load(
-        datasets=ds,
-        **args.data_params
-    )
-    print(colored('\nData:\n', color='blue'))
-    print('Train Set:       ', len(train_set))
-    print('Validation Set:  ', len(val_set))
-    print('Test Set:        ', len(test_set))
 
-    model = models.build_model(args.model,
-                               feature_shape=train_set.dshape,
-                               **args.model_params)
+    train_set, val_set, test_set = data.load(datasets=ds, **args.data_params)
+    Model = models.get_model(args.model)
+    train_src, val_src, test_src = data.create_datasources(
+        datasets=[train_set, val_set, test_set],
+        representations=(Model.source_representations() +
+                         Model.target_representations())
+    )
+
+    print(colored('\nData:\n', color='blue'))
+    print('Train Set:       ', len(train_src))
+    print('Validation Set:  ', len(val_src))
+    print('Test Set:        ', len(test_src))
+
+    model = Model(feature_shape=train_src.dshape, **args.model_params)
     print(colored('\nModel:\n', color='blue'))
     print(model)
     print('\n')
@@ -92,8 +95,8 @@ def main():
     # -----------
     # Train Model
     # -----------
-    train_batches = model.train_iterator(train_set.datasources)
-    val_batches = model.test_iterator(val_set.datasources)
+    train_batches = model.train_iterator(train_src)
+    val_batches = model.test_iterator(val_src)
 
     validator = trt.training.Validator(
         model, val_batches,
@@ -141,7 +144,7 @@ def main():
     # Compute predictions
     # -------------------
     print(colored('\nApplying on Test Set:\n', color='blue'))
-    test(model, test_set, experiment_dir)
+    test(model, test_src, experiment_dir)
 
 
 if __name__ == '__main__':
