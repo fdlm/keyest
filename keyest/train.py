@@ -21,6 +21,7 @@ USAGE = """
 Usage:
     train.py --data=<S> --model=<S> [--data_params=<S|yaml>] 
              [--model_params=<S|yaml>] [--out=<S>] [--force]
+             [--model_history]
 
 Options:
     --data=<S>  Dataset(s) to load (comma separated if multiple)
@@ -29,6 +30,7 @@ Options:
     --model_params=<S|yaml>  Model hyper-parameters in YAML format
     --out=<S>  Experiment output directory (default is model name)
     --force  Overwrite experiment output directory if it already exists.
+    --model_history  Save model for each epoch
 """
 
 
@@ -41,6 +43,7 @@ class Args(object):
         self.model_params = yaml.load(args['--model_params'] or '{}')
         self.out = args['--out']
         self.force = args['--force']
+        self.model_history = args['--model_history']
 
 
 def main():
@@ -107,12 +110,16 @@ def main():
     )
     model_checkpoints = trt.outputs.ModelCheckpoint(
         model,
-        file_fmt=join(experiment_dir, 'model_ep_{epoch:03d}.pkl'),
+        file_fmt=join(experiment_dir, 'best_model_ep_{epoch:03d}.pkl'),
         max_history=3)
     checkpoint_on_improvement = trt.training.ImprovementTrigger(
         [model_checkpoints],
         observed='val_acc',
         compare=operator.gt)
+    callbacks = [checkpoint_on_improvement]
+    if args.model_history:
+        callbacks.append(trt.outputs.ModelCheckpoint(
+            model, file_fmt=join(experiment_dir, 'model_ep_{epoch:03d}.pkl')))
 
     print(colored('Training:\n', color='blue'))
 
@@ -127,7 +134,7 @@ def main():
         validator=validator,
         logs=[trt.outputs.ConsoleLog(),
               trt.outputs.YamlLog(join(experiment_dir, 'log.yaml'))],
-        callbacks=model.callbacks + [checkpoint_on_improvement],
+        callbacks=model.callbacks + callbacks,
     )
 
     # load best parameters

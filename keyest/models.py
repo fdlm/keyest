@@ -1,16 +1,22 @@
 import warnings
 import theano.tensor as tt
+
+import auds
 import lasagne
 import theano
 import numpy as np
 import trattoria
 import operator
 from abc import abstractmethod, abstractproperty
+
+from auds.representations import LogFiltSpec, SingleKeyMajMin
+from config import CACHE_DIR
 from lasagne.nonlinearities import softmax, elu
 from lasagne.layers import (DenseLayer, InputLayer, dropout_channels,
                             ReshapeLayer, Conv2DLayer, batch_norm, MergeLayer,
                             MaxPool2DLayer, GlobalPoolLayer, NonlinearityLayer,
-                            FlattenLayer)
+                            FlattenLayer, DimshuffleLayer, BatchNormLayer,
+                            ConcatLayer, ScaleLayer)
 from lasagne.init import HeNormal
 from trattoria.objectives import average_categorical_crossentropy
 from trattoria.nets import NeuralNetwork
@@ -78,23 +84,35 @@ class TrainableModel(object):
         return {}
 
     @abstractmethod
-    def train_iterator(self, data):
+    def train_iterator(self, datasource):
         pass
 
     @abstractmethod
-    def test_iterator(self, data):
+    def test_iterator(self, datasource):
         pass
 
+    @staticmethod
+    def source_representations():
+        return []
 
-def build_model(model, **kwargs):
-    """
-    Builds a model class.
+    @staticmethod
+    def target_representations():
+        return []
 
-    :param model: name of the model (str)
-    :param kwargs: hyper-parameters of the model
-    :return: model object
-    """
-    return globals()[model](**kwargs)
+
+def get_model(model):
+    return globals()[model]
+
+
+def add_dimension(representation):
+    import types
+    def represent_with_added_dim(self, view_files):
+        return self._represent_lowerdim(view_files)[np.newaxis, ...]
+
+    representation._represent_lowerdim = representation.represent
+    representation.represent = types.MethodType(represent_with_added_dim,
+                                                representation)
+    return representation
 
 
 class Eusipco2017(NeuralNetwork, TrainableModel):
@@ -182,17 +200,17 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
     def observables(self):
         return {'lr': lambda *args: self.learning_rate}
 
-    def train_iterator(self, data):
+    def train_iterator(self, datasource):
         return trattoria.iterators.SequenceClassificationIterator(
-            data,
+            datasource.datasources,
             batch_size=8,
             shuffle=True,
             fill_last=True,
         )
 
-    def test_iterator(self, data):
+    def test_iterator(self, datasource):
         return trattoria.iterators.SequenceClassificationIterator(
-            data,
+            datasource.datasources,
             batch_size=1,
             shuffle=False,
             fill_last=False,
@@ -221,6 +239,17 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
         layers.append(FeedForwardLayer(p[0], p[1], activation_fn=softmax))
         return NeuralNetwork(layers)
 
+    @staticmethod
+    def source_representations():
+        return [add_dimension(auds.representations.make_cached(
+            LogFiltSpec(frame_size=8192, fft_size=None, n_bands=24,
+                        fmin=65, fmax=2100, fps=5, unique_filters=True,
+                        sample_rate=44100), CACHE_DIR))]
+
+    @staticmethod
+    def target_representations():
+        return [SingleKeyMajMin()]
+
 
 class Snippet(object):
 
@@ -232,24 +261,27 @@ class Snippet(object):
         pass
 
     def __call__(self, batch_iterator):
-        for data, mask, target in batch_iterator:
-            data_snippet = np.zeros(
-                (data.shape[0], self.snippet_length) + data.shape[2:],
-                dtype=data.dtype)
+        for batch in batch_iterator:
+            seq, other, mask, target = (batch[0], batch[1:-2], batch[-2],
+                                        batch[-1])
+
+            seq_snippet = np.zeros(
+                (seq.shape[0], self.snippet_length) + seq.shape[2:],
+                dtype=seq.dtype)
 
             mask_snippet = np.zeros((mask.shape[0], self.snippet_length),
                                     dtype=mask.dtype)
 
-            for i in range(len(data)):
+            for i in range(len(seq)):
                 dlen = np.flatnonzero(mask[i])[-1]
-                start = self.snippet_start(data[i], dlen)
+                start = self.snippet_start(seq[i], dlen)
                 end = start + self.snippet_length
-                ds = data[i, start:end, ...]
+                ds = seq[i, start:end, ...]
                 ms = mask[i, start:end]
-                data_snippet[i, :len(ds)] = ds
+                seq_snippet[i, :len(ds)] = ds
                 mask_snippet[i, :len(ms)] = ms
 
-            yield data_snippet, mask_snippet, target
+            yield (seq_snippet,) + other + (mask_snippet,) + (target,)
 
 
 class CenterSnippet(Snippet):
@@ -278,10 +310,264 @@ class Eusipco2017Snippet(Eusipco2017):
         self.snippet_length = snippet_length
 
     def train_iterator(self, data):
-        return trattoria.iterators.AugmentedIterator(
-            super(Eusipco2017Snippet, self).train_iterator(data),
-            RandomSnippet(snippet_length=self.snippet_length)
+        return trattoria.iterators.SubsetIterator(
+            trattoria.iterators.AugmentedIterator(
+                super(Eusipco2017Snippet, self).train_iterator(data),
+                RandomSnippet(snippet_length=self.snippet_length)
+            ),
+            percentage=0.25
         )
+
+
+class ExpressionMergeLayer(MergeLayer):
+
+    """
+    This layer performs an custom expressions on list of inputs to merge them.
+    This layer is different from ElemwiseMergeLayer by not required all
+    input_shapes are equal
+
+    Parameters
+    ----------
+    incomings : a list of :class:`Layer` instances or tuples
+        the layers feeding into this layer, or expected input shapes
+
+    merge_function : callable
+        the merge function to use. Should take two arguments and return the
+        updated value. Some possible merge functions are ``theano.tensor``:
+        ``mul``, ``add``, ``maximum`` and ``minimum``.
+
+    output_shape : None, callable, tuple, or 'auto'
+        Specifies the output shape of this layer. If a tuple, this fixes the
+        output shape for any input shape (the tuple can contain None if some
+        dimensions may vary). If a callable, it should return the calculated
+        output shape given the input shape. If None, the output shape is
+        assumed to be the same as the input shape. If 'auto', an attempt will
+        be made to automatically infer the correct output shape.
+
+    Notes
+    -----
+    if ``output_shape=None``, this layer chooses first input_shape as its
+    output_shape
+
+    Example
+    --------
+    >>> from lasagne.layers import InputLayer, DimshuffleLayer, ExpressionMergeLayer
+    >>> l_in = lasagne.layers.InputLayer(shape=(None, 500, 120))
+    >>> l_mask = lasagne.layers.InputLayer(shape=(None, 500))
+    >>> l_dim = lasagne.layers.DimshuffleLayer(l_mask, pattern=(0, 1, 'x'))
+    >>> l_out = lasagne.layers.ExpressionMergeLayer(
+                                (l_in, l_dim), tensor.mul, output_shape='auto')
+    (None, 500, 120)
+    """
+
+    def __init__(self, incomings, merge_function, output_shape=None, **kwargs):
+        super(ExpressionMergeLayer, self).__init__(incomings, **kwargs)
+        if output_shape is None:
+            self._output_shape = None
+        elif output_shape == 'auto':
+            self._output_shape = 'auto'
+        elif hasattr(output_shape, '__call__'):
+            self.get_output_shape_for = output_shape
+        else:
+            self._output_shape = tuple(output_shape)
+
+        self.merge_function = merge_function
+
+    def get_output_shape_for(self, input_shapes):
+        if self._output_shape is None:
+            return input_shapes[0]
+        elif self._output_shape is 'auto':
+            input_shape = [(0 if s is None else s for s in ishape)
+                           for ishape in input_shapes]
+            Xs = [T.alloc(0, *ishape) for ishape in input_shape]
+            output_shape = self.merge_function(*Xs).shape.eval()
+            output_shape = tuple(s if s else None for s in output_shape)
+            return output_shape
+        else:
+            return self._output_shape
+
+    def get_output_for(self, inputs, **kwargs):
+        return self.merge_function(*inputs)
+
+
+class SelecterOutSaver(object):
+
+    def __init__(self, tag_selected_net, batches):
+        self.batches = batches
+        self.outs = [lasagne.layers.get_output(sel)
+                     for sel in tag_selected_net.selecters]
+        self.compute_selections = theano.function(
+            [tag_selected_net.get_inputs()[1]],
+            self.outs,
+        )
+
+    def __call__(self, epoch, observed):
+        selector_outs = [[] for _ in self.outs]
+        for batch in self.batches:
+            outs = self.compute_selections(batch[:-1])
+            for i in range(len(outs)):
+                selector_outs[i].append(outs[i])
+        np.save('selectorout.npz', selector_outs)
+
+
+class TagSelectedSnippet(NeuralNetwork, TrainableModel):
+
+    def __init__(self,
+                 feature_shape,
+                 n_layers=5,
+                 n_filters=8,
+                 filter_size=5,
+                 dropout=0.0,
+                 embedding_size=48,
+                 n_epochs=100,
+                 learning_rate=0.001,
+                 patience=10,
+                 l2=1e-4,
+                 snippet_length=100,
+                 select_filters=True,
+                 tags_at_softmax=False,
+                 ):
+        # TODO: tags at projection
+        # TODO: softmax bias from tags
+        # TODO: softmax weights from tags
+        # TODO: projection weights from tags
+        # TODO: convolutional kernels from tags?
+
+        self._hypers = dict(
+            n_layers=n_layers,
+            n_filters=n_filters,
+            filter_size=filter_size,
+            dropout=dropout,
+            embedding_size=embedding_size,
+            n_epochs=n_epochs,
+            learning_rate=learning_rate,
+            l2=l2,
+            patience=patience,
+            snippet_length=snippet_length,
+            select_filters=select_filters,
+            tags_at_softmax=tags_at_softmax
+        )
+
+        self.snippet_length = snippet_length
+        self.patience = patience
+        self.l2 = l2
+        self.learning_rate = theano.shared(np.float32(learning_rate),
+                                           allow_downcast=True)
+
+        net = InputLayer((None,) + feature_shape, name='spec in')
+        self.bn_alpha = theano.shared(np.float32(0.01))
+        tag_input = BatchNormLayer(
+            InputLayer((None, 65), name='tag in'),
+            beta=None, gamma=lasagne.init.Constant(0.5),
+            name='tags_normed', alpha=self.bn_alpha)
+        tag_input.params[tag_input.gamma].remove('trainable')
+        tag_input = NonlinearityLayer(
+            tag_input, nonlinearity=lasagne.nonlinearities.tanh)
+
+        mask = InputLayer((None, None), name='mask in')
+        self.mask = mask.input_var
+        n_batch, n_time_steps, _ = net.input_var.shape
+        net = ReshapeLayer(net, (n_batch, 1, n_time_steps, feature_shape[-1]))
+
+        for i in range(n_layers):
+            net = Conv2DLayer(net, num_filters=n_filters,
+                              filter_size=filter_size, pad='same',
+                              nonlinearity=elu, W=HeNormal())
+            if select_filters:
+                selecter = DenseLayer(
+                    tag_input, num_units=n_filters,
+                    nonlinearity=lasagne.nonlinearities.sigmoid,
+                    W=lasagne.init.Constant(0.), b=None)
+                selecter = DimshuffleLayer(selecter, (0, 1, 'x', 'x'))
+                net = ExpressionMergeLayer([net, selecter], tt.mul)
+            if dropout > 0.:
+                net = dropout_channels(net, p=dropout)
+
+        net = lasagne.layers.dimshuffle(net, (0, 2, 1, 3))
+        net = ReshapeLayer(net, (n_batch * n_time_steps,
+                                 n_filters * feature_shape[-1]))
+        net = DenseLayer(net, num_units=embedding_size, nonlinearity=elu)
+        net = ReshapeLayer(net, (n_batch, n_time_steps, embedding_size))
+        net = AverageLayer(net, axis=1, mask_input=mask)
+        if tags_at_softmax:
+            net = FlattenLayer(net)
+            net = ConcatLayer([net, tag_input])
+        net = DenseLayer(net, num_units=24, nonlinearity=softmax)
+
+        y = tt.fmatrix('y')
+        super(TagSelectedSnippet, self).__init__(net, y)
+
+    def update(self, loss, params):
+        return lasagne.updates.momentum(loss, params,
+                                        learning_rate=self.learning_rate,
+                                        momentum=0.9)
+
+    def loss(self, predictions, targets):
+        return average_categorical_crossentropy(predictions, targets)
+
+    @property
+    def hypers(self):
+        return self._hypers
+
+    @property
+    def regularizers(self):
+        return [lasagne.regularization.regularize_layer_params(
+            self.net, lasagne.regularization.l2) * self.l2]
+
+    @property
+    def callbacks(self):
+        learn_rate_halving = trattoria.schedules.PatienceMult(
+            self.learning_rate, factor=0.5, observe='val_acc',
+            patience=self.patience, compare=operator.gt)
+        batch_norm_update = trattoria.schedules.Linear(
+            self.bn_alpha, start_epoch=0, end_epoch=2,
+            target_value=0.,
+        )
+        parameter_reset = trattoria.schedules.WarmRestart(
+            self, observe='val_acc', patience=self.patience,
+            compare=operator.gt)
+        return [learn_rate_halving, batch_norm_update, parameter_reset]
+
+    @property
+    def observables(self):
+        return {'lr': lambda *args: self.learning_rate,
+                'bn_alpha': lambda *args: self.bn_alpha}
+
+    def train_iterator(self, data):
+        return trattoria.iterators.SubsetIterator(
+            trattoria.iterators.AugmentedIterator(
+                trattoria.iterators.SequenceClassificationIterator(
+                    data.datasources,
+                    batch_size=8,
+                    shuffle=True,
+                    fill_last=True,
+                ),
+                RandomSnippet(snippet_length=self.snippet_length)
+            ),
+            percentage=0.25
+        )
+
+    def test_iterator(self, datasource):
+        return trattoria.iterators.SequenceClassificationIterator(
+            datasource.datasources,
+            batch_size=1,
+            shuffle=False,
+            fill_last=False,
+        )
+
+    @staticmethod
+    def source_representations():
+        spectrogram = add_dimension(auds.representations.make_cached(
+            LogFiltSpec(frame_size=8192, fft_size=None, n_bands=24,
+                        fmin=65, fmax=2100, fps=5, unique_filters=True,
+                        sample_rate=44100), CACHE_DIR))
+        tags = add_dimension(auds.representations.Precomputed(
+            '/home/filip/.tmp/jamendo_tags', 'audio', 'jamendo_tags'))
+        return [spectrogram, tags]
+
+    @staticmethod
+    def target_representations():
+        return [auds.representations.make_cached(SingleKeyMajMin(), CACHE_DIR)]
 
 
 def remove_mask(batch_iterator):

@@ -24,9 +24,10 @@ KEYS = ['A major', 'Bb major', 'B major', 'C major', 'Db major', 'D major',
 
 def test(model, data_set, dst_dir):
     for piece in tqdm(data_set.datasources, desc='Predicting'):
-        piece_data = piece[:][0]
-        mask = np.ones((1, piece_data.shape[1]), dtype=np.float32)
-        predictions = model.process(piece_data, mask)
+        piece_data = piece[:][:-1]  # remove target
+        mask = np.ones((1, piece_data[0].shape[1]), dtype=np.float32)
+        data = piece_data + (mask,)
+        predictions = model.process(*data)
         pred_file = join(dst_dir, piece.name)
         np.save(pred_file, predictions)
         with open(join(dst_dir, piece.name + '.key.txt'), 'w') as f:
@@ -51,19 +52,24 @@ def main():
         **config['data_params']
     )
 
-    print(colored('\nData:\n', color='blue'))
-    print('Test Set: ', len(test_set))
+    Model = models.get_model(config['model'])
+    test_src = data.create_datasources(
+        datasets=[test_set],
+        representations=(Model.source_representations() +
+                         Model.target_representations())
+    )[0]
 
-    model = models.build_model(config['model'],
-                               feature_shape=test_set.dshape,
-                               **config['model_params'])
+    print(colored('\nData:\n', color='blue'))
+    print('Test Set: ', len(test_src))
+
+    model = Model(feature_shape=test_src.dshape, **config['model_params'])
     model.load(join(args['--exp_dir'], 'best_model.pkl'))
 
     # -------------------
     # Compute predictions
     # -------------------
     print(colored('\nApplying on Test Set:\n', color='blue'))
-    test(model, test_set, args['--exp_dir'])
+    test(model, test_src, args['--exp_dir'])
 
 
 if __name__ == "__main__":
