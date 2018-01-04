@@ -1,3 +1,5 @@
+from abc import abstractmethod
+
 import numpy as np
 import random
 from scipy.ndimage import shift
@@ -70,3 +72,54 @@ class Detuning(object):
                     data[i], (shifts[i] * self.bins_per_semitone, 0))
 
         return new_data, targets
+
+
+class Snippet(object):
+
+    def __init__(self, snippet_length):
+        self.snippet_length = snippet_length
+
+    @abstractmethod
+    def snippet_start(self, data, data_length):
+        pass
+
+    def __call__(self, batch_iterator):
+        for batch in batch_iterator:
+            seq, other, mask, target = (batch[0], batch[1:-2], batch[-2],
+                                        batch[-1])
+
+            seq_snippet = np.zeros(
+                (seq.shape[0], self.snippet_length) + seq.shape[2:],
+                dtype=seq.dtype)
+
+            mask_snippet = np.zeros((mask.shape[0], self.snippet_length),
+                                    dtype=mask.dtype)
+
+            for i in range(len(seq)):
+                dlen = np.flatnonzero(mask[i])[-1]
+                start = self.snippet_start(seq[i], dlen)
+                end = start + self.snippet_length
+                ds = seq[i, start:end, ...]
+                ms = mask[i, start:end]
+                seq_snippet[i, :len(ds)] = ds
+                mask_snippet[i, :len(ms)] = ms
+
+            yield (seq_snippet,) + other + (mask_snippet,) + (target,)
+
+
+class CenterSnippet(Snippet):
+
+    def snippet_start(self, data, data_length):
+        return max(0, data_length / 2 - self.snippet_length / 2)
+
+
+class RandomSnippet(Snippet):
+
+    def snippet_start(self, data, data_length):
+        return np.random.randint(0, max(1, data_length - self.snippet_length))
+
+
+class BeginningSnippet(Snippet):
+
+    def snippet_start(self, data, data_length):
+        return 0
