@@ -13,6 +13,8 @@ import matplotlib.pyplot as plt
 
 
 USAGE = """
+Plots which feature maps have been selected by the tag informed net.
+
 Usage:
     plot_selections.py [options] <exp_dir> <tag_dir>
     
@@ -41,7 +43,7 @@ def main():
     plot_bn = args['--bn_params']
     plot_sel = args['--sel']
     max_pieces = int(args['--max_pieces'])
-    model_params = glob(args['<exp_dir>'] + '/model_ep*.pkl')
+    model_params = sorted(glob(args['<exp_dir>'] + '/model_ep*.pkl'))
     out_dir = args['--out']
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
@@ -66,16 +68,19 @@ def main():
         fig.suptitle('Batch Norm Params')
         fig.savefig(join(out_dir, 'bn_params.pdf'))
 
-    gs_tags = np.array(
-        [np.load(f) for f in glob(args['<tag_dir>'] + '/*LOFI*.0.npy')])[:max_pieces]
+    gs_tags = np.array([
+        np.load(f)
+        for f in sorted(glob(args['<tag_dir>'] + '/*LO*.0.npy'))[:max_pieces]])
     bb_tags = np.array(
-        [np.load(f) for f in glob(args['<tag_dir>'] + '/mcgill*.0.npy')])[:max_pieces]
+        [np.load(f)
+         for f in sorted(glob(args['<tag_dir>'] + '/mc*.0.npy'))[:max_pieces]])
 
     n_pieces = len(gs_tags) + len(bb_tags)
 
     if use_cm:
         cm_tags = np.array([
-            np.load(f) for f in glob(args['<tag_dir>'] + '/cm*.0.npy')])[:max_pieces]
+            np.load(f)
+            for f in sorted(glob(args['<tag_dir>'] + '/cm*.0.npy'))[:max_pieces]])
         n_pieces += len(cm_tags)
 
     alpha = 5. / n_pieces
@@ -106,14 +111,20 @@ def main():
             plt.xlim(0, 64)
             plt.ylim(-1, 1)
             plt.title('Tag Embeddings, Batch Norm Ep. {:03d}'.format(i + 1))
-            plt.savefig(join(out_dir, 'tag_embeddings_ep{:03d}.png'.format(i + 1)))
+            plt.savefig(join(out_dir,
+                             'tag_embeddings_ep{:03d}.png'.format(i + 1)))
             del fig
 
         if plot_sel:
-            proj = [NeuralNetwork([bn, FeedForwardLayer(weights=w, bias=np.array(0.),
-                                                        activation_fn=sigmoid)])
-                    for w in params[5:-2:3]]
-            fig, axes = plt.subplots(2, 3, figsize=(15, 10), sharex=True, sharey=True)
+            proj = [
+                NeuralNetwork([
+                    bn, FeedForwardLayer(weights=w, bias=np.array(0.),
+                                         activation_fn=sigmoid)
+                ])
+                for w in params[5:-2:3]
+            ]
+            fig, axes = plt.subplots(2, 3, figsize=(15, 10), sharex=True,
+                                     sharey=True)
             from itertools import chain
             axes = chain.from_iterable(axes)
             for l, (p, ax) in enumerate(zip(proj, axes)):
