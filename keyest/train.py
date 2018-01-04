@@ -118,6 +118,7 @@ def main():
         compare=operator.gt)
     callbacks = [checkpoint_on_improvement]
     if args.model_history:
+        model.save(join(experiment_dir, 'model_init.pkl'))
         callbacks.append(trt.outputs.ModelCheckpoint(
             model, file_fmt=join(experiment_dir, 'model_ep_{epoch:03d}.pkl')))
 

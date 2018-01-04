@@ -5,6 +5,7 @@ from os.path import join
 from docopt import docopt
 from termcolor import colored
 from tqdm import tqdm
+import os
 
 import data
 import models
@@ -23,6 +24,9 @@ KEYS = ['A major', 'Bb major', 'B major', 'C major', 'Db major', 'D major',
 
 
 def test(model, data_set, dst_dir):
+    if not os.path.exists(dst_dir):
+        os.makedirs(dst_dir)
+
     for piece in tqdm(data_set.datasources, desc='Predicting'):
         piece_data = piece[:][:-1]  # remove target
         mask = np.ones((1, piece_data[0].shape[1]), dtype=np.float32)
@@ -47,19 +51,21 @@ def main():
     else:
         ds = args['--data']
 
-    _, _, test_set = data.load(
+    train_set, val_set, test_set = data.load(
         datasets=ds,
         **config['data_params']
     )
 
     Model = models.get_model(config['model'])
-    test_src = data.create_datasources(
-        datasets=[test_set],
+    train_src, val_src, test_src = data.create_datasources(
+        datasets=[train_set, val_set, test_set],
         representations=(Model.source_representations() +
                          Model.target_representations())
-    )[0]
+    )
 
     print(colored('\nData:\n', color='blue'))
+    print('Training Set: ', len(train_src))
+    print('Validation Set: ', len(val_src))
     print('Test Set: ', len(test_src))
 
     model = Model(feature_shape=test_src.dshape, **config['model_params'])
@@ -68,8 +74,12 @@ def main():
     # -------------------
     # Compute predictions
     # -------------------
+    print(colored('\nApplying on Training Set:\n', color='blue'))
+    test(model, train_src, join(args['--exp_dir'], 'train'))
+    print(colored('\nApplying on Validation Set:\n', color='blue'))
+    test(model, val_src, join(args['--exp_dir'], 'val'))
     print(colored('\nApplying on Test Set:\n', color='blue'))
-    test(model, test_src, args['--exp_dir'])
+    test(model, test_src, join(args['--exp_dir'], 'test'))
 
 
 if __name__ == "__main__":
