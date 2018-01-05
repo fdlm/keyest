@@ -19,7 +19,7 @@ import auds
 import trattoria
 from auds.representations import LogFiltSpec, SingleKeyMajMin
 from config import CACHE_DIR
-from keyest.augmenters import CenterSnippet, RandomSnippet
+from augmenters import CenterSnippet, RandomSnippet
 from trattoria.nets import NeuralNetwork
 from trattoria.objectives import average_categorical_crossentropy
 
@@ -67,11 +67,11 @@ class TrainableModel(object):
 
     @staticmethod
     def source_representations():
-        return []
+        raise NotImplementedError('Specify source representation!')
 
     @staticmethod
     def target_representations():
-        return []
+        raise NotImplementedError('Specify target representation!')
 
 
 def get_model(model):
@@ -175,17 +175,17 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
     def observables(self):
         return {'lr': lambda *args: self.learning_rate}
 
-    def train_iterator(self, datasource):
+    def train_iterator(self, data):
         return trattoria.iterators.SequenceClassificationIterator(
-            datasource.datasources,
+            data.datasources,
             batch_size=8,
             shuffle=True,
             fill_last=True,
         )
 
-    def test_iterator(self, datasource):
+    def test_iterator(self, data):
         return trattoria.iterators.SequenceClassificationIterator(
-            datasource.datasources,
+            data.datasources,
             batch_size=1,
             shuffle=False,
             fill_last=False,
@@ -246,6 +246,26 @@ class Eusipco2017Snippet(Eusipco2017):
 
 
 class TagSelectedSnippet(NeuralNetwork, TrainableModel):
+    """
+    Parameters
+    ----------
+    tags_select_filters : bool
+        Use Tag input to compute a weight vector to be multiplied on the
+        feature maps. This can be seen as activating/deactivating certain
+        feature maps given the tag information.
+
+    tags_at_softmax : bool
+        Tags get concatenated to the penultimate representation, before the
+        last projection. This is equivalent to computing a key bias given
+        the tags.
+
+    tags_at_projection : bool
+        Tags get concatenated to each time step before the projection layer
+        after the convolutions. This can be seen as computing a projection bias
+        given the tags.
+
+
+    """
 
     def __init__(self,
                  feature_shape,
@@ -262,8 +282,9 @@ class TagSelectedSnippet(NeuralNetwork, TrainableModel):
                  tags_select_filters=True,
                  tags_at_softmax=False,
                  tags_at_projection=False,
+                 tags_for_softmax_weights=False
                  ):
-        # TODO: softmax bias from tags
+
         # TODO: softmax weights from tags
         # TODO: projection weights from tags
         # TODO: convolutional kernels from tags?
@@ -349,7 +370,15 @@ class TagSelectedSnippet(NeuralNetwork, TrainableModel):
         if tags_at_softmax:
             net = ConcatLayer([net, tag_input])
 
-        net = DenseLayer(net, num_units=24, nonlinearity=softmax, W=lasagne.init.Constant(0.))
+        if tags_for_softmax_weights:
+            in_units = net.output_shape[1]
+            sm_weight_layer = DenseLayer(tag_input, num_units=in_units * 24)
+            sm_weight_layer = ReshapeLayer(sm_weight_layer, (in_units, 24))
+            sm_weights = lasagne.layers.get_output(sm_weight_layer)
+        else:
+            sm_weights = lasagne.init.Constant(0.)
+
+        net = DenseLayer(net, num_units=24, nonlinearity=softmax, W=sm_weights)
 
         y = tt.fmatrix('y')
         super(TagSelectedSnippet, self).__init__(net, y)
@@ -358,7 +387,8 @@ class TagSelectedSnippet(NeuralNetwork, TrainableModel):
         return [self.spec_in, self.tag_in, self.mask_in]
 
     def update(self, loss, params):
-        return lasagne.updates.adam(loss, params)
+        return lasagne.updates.adam(loss, params,
+                                    learning_rate=self.learning_rate)
 
     def loss(self, predictions, targets):
         return average_categorical_crossentropy(predictions, targets, eta=1e-5)
@@ -403,9 +433,9 @@ class TagSelectedSnippet(NeuralNetwork, TrainableModel):
             percentage=0.25
         )
 
-    def test_iterator(self, datasource):
+    def test_iterator(self, data):
         return trattoria.iterators.SequenceClassificationIterator(
-            datasource.datasources,
+            data.datasources,
             batch_size=1,
             shuffle=False,
             fill_last=False,
@@ -435,26 +465,19 @@ class AllConv(NeuralNetwork, TrainableModel):
 
     def __init__(self,
                  feature_shape,
-                 n_layers=5,
-                 n_filters=8,
-                 filter_size=5,
+                 n_filters=2,
                  dropout=0.0,
-                 embedding_size=48,
                  n_epochs=100,
                  learning_rate=0.001,
                  patience=10,
-                 l2=1e-4,
+                 l2=1e-6,
                  snippet_length=100):
 
         self._hypers = dict(
-            n_layers=n_layers,
-            n_filters=n_filters,
-            filter_size=filter_size,
+            n_filters=2,
             dropout=dropout,
-            embedding_size=embedding_size,
             n_epochs=n_epochs,
             learning_rate=learning_rate,
-            l2=l2,
             patience=patience,
             snippet_length=snippet_length
         )
@@ -465,60 +488,56 @@ class AllConv(NeuralNetwork, TrainableModel):
         self.learning_rate = theano.shared(np.float32(learning_rate),
                                            allow_downcast=True)
 
+        nonlin = lasagne.nonlinearities.elu
+        init_conv = lasagne.init.HeNormal
+
         net = InputLayer((None,) + feature_shape)
         n_batch, n_time_steps, _ = net.input_var.shape
         net = ReshapeLayer(net, (n_batch, 1, n_time_steps, feature_shape[-1]))
 
-        nonlin = lasagne.nonlinearities.elu
-        init_conv = lasagne.init.HeNormal
-        n_filt = 4
+        def conv_bn(net, n_filters, filter_size):
+            return batch_norm(Conv2DLayer(
+                net, num_filters=n_filters, filter_size=filter_size,
+                stride=1, pad='same', W=init_conv(), nonlinearity=nonlin))
 
         # --- conv layers ---
-        net = Conv2DLayer(net, num_filters=n_filt, filter_size=5, stride=1, pad=2, W=init_conv(), nonlinearity=nonlin)
-        net = batch_norm(net)
-        net = Conv2DLayer(net, num_filters=n_filt, filter_size=3, stride=1, pad=1, W=init_conv(), nonlinearity=nonlin)
-        net = batch_norm(net)
+        net = conv_bn(net, n_filters, 5)
+        net = conv_bn(net, n_filters, 3)
         net = MaxPool2DLayer(net, pool_size=2)
-        # net = dropout_channels(net, p=0.3)
+        if dropout:
+            net = dropout_channels(net, p=dropout)
 
-        net = Conv2DLayer(net, num_filters=n_filt * 2, filter_size=3, stride=1, pad=1, W=init_conv(), nonlinearity=nonlin)
-        net = batch_norm(net)
-        net = Conv2DLayer(net, num_filters=n_filt * 2, filter_size=3, stride=1, pad=1, W=init_conv(), nonlinearity=nonlin)
+        net = conv_bn(net, n_filters * 2, 3)
+        net = conv_bn(net, n_filters * 2, 3)
         net = MaxPool2DLayer(net, pool_size=2)
-        # net = dropout_channels(net, p=0.3)
+        if dropout:
+            net = dropout_channels(net, p=dropout)
 
-        net = Conv2DLayer(net, num_filters=n_filt * 4, filter_size=3, stride=1, pad=1, W=init_conv(), nonlinearity=nonlin)
-        net = batch_norm(net)
-        net = Conv2DLayer(net, num_filters=n_filt * 4, filter_size=3, stride=1, pad=1, W=init_conv(), nonlinearity=nonlin)
-        net = batch_norm(net)
-        net = Conv2DLayer(net, num_filters=n_filt * 4, filter_size=3, stride=1, pad=1, W=init_conv(), nonlinearity=nonlin)
-        net = batch_norm(net)
-        net = Conv2DLayer(net, num_filters=n_filt * 4, filter_size=3, stride=1, pad=1, W=init_conv(), nonlinearity=nonlin)
-        net = batch_norm(net)
+        net = conv_bn(net, n_filters * 4, 3)
+        net = conv_bn(net, n_filters * 4, 3)
         net = MaxPool2DLayer(net, pool_size=2)
-        # net = dropout_channels(net, p=0.3)
+        if dropout:
+            net = dropout_channels(net, p=dropout)
 
-        net = Conv2DLayer(net, num_filters=n_filt * 8, filter_size=3, pad=1, W=init_conv(), nonlinearity=nonlin)
-        net = batch_norm(net)
-        # net = dropout_channels(net, p=0.5)
-        net = Conv2DLayer(net, num_filters=n_filt * 8, filter_size=1, pad=0, W=init_conv(), nonlinearity=nonlin)
-        net = batch_norm(net)
-        # net = dropout_channels(net, p=0.5)
+        net = conv_bn(net, n_filters * 8, 3)
+        if dropout:
+            net = dropout_channels(net, p=dropout)
+        net = conv_bn(net, n_filters * 8, 3)
+        if dropout:
+            net = dropout_channels(net, p=dropout)
 
         # --- feed forward part ---
-        net = Conv2DLayer(net, num_filters=24, filter_size=1, W=init_conv(),
-                          nonlinearity=nonlin)
-        net = batch_norm(net)
+        net = conv_bn(net, 24, 1)
         net = GlobalPoolLayer(net)
         net = FlattenLayer(net)
-        net = NonlinearityLayer(net, nonlinearity=lasagne.nonlinearities.softmax)
-        # net = NonlinearityLayer(net, nonlinearity=temperature_softmax)
+        net = NonlinearityLayer(net, lasagne.nonlinearities.softmax)
 
         y = tt.fmatrix('y')
         super(AllConv, self).__init__(net, y)
 
     def update(self, loss, params):
-        return lasagne.updates.adam(loss, params, learning_rate=0.001)
+        return lasagne.updates.adam(loss, params,
+                                    learning_rate=self.learning_rate)
 
     def loss(self, predictions, targets):
         return average_categorical_crossentropy(predictions, targets)
@@ -534,37 +553,46 @@ class AllConv(NeuralNetwork, TrainableModel):
 
     @property
     def callbacks(self):
-        learn_rate_halving = trattoria.schedules.PatienceMult(
-            self.learning_rate, factor=0.5, observe='val_acc',
-            patience=self.patience, compare=operator.gt)
-        parameter_reset = trattoria.schedules.WarmRestart(
-            self, observe='val_acc', patience=self.patience,
-            compare=operator.gt)
-        return [learn_rate_halving, parameter_reset]
+        return [trattoria.schedules.Linear(
+            self.learning_rate, 10, self.hypers['n_epochs'], 0.0
+        )]
 
     @property
     def observables(self):
         return {'lr': lambda *args: self.learning_rate}
 
     def train_iterator(self, data):
-        it = trattoria.iterators.SequenceClassificationIterator(
-            data,
-            batch_size=128,
-            shuffle=True,
-            fill_last=True,
-        )
-        return trattoria.iterators.AugmentedIterator(
-            it, remove_mask, RandomSnippet(snippet_length=self.snippet_length),
+        return trattoria.iterators.SubsetIterator(
+            trattoria.iterators.AugmentedIterator(
+                trattoria.iterators.SequenceClassificationIterator(
+                    data.datasources,
+                    batch_size=32,
+                    shuffle=True,
+                    fill_last=True
+                ),
+                remove_mask, RandomSnippet(snippet_length=self.snippet_length)
+            ),
+            percentage=0.25
         )
 
     def test_iterator(self, data):
-        it = trattoria.iterators.SequenceClassificationIterator(
-            data,
-            batch_size=128,
-            shuffle=False,
-            fill_last=False,
-        )
         return trattoria.iterators.AugmentedIterator(
-            it, remove_mask, CenterSnippet(snippet_length=self.snippet_length * 3),
+            trattoria.iterators.SequenceClassificationIterator(
+                data.datasources,
+                batch_size=1,
+                shuffle=False,
+                fill_last=False,
+            ),
+            remove_mask
         )
 
+    @staticmethod
+    def source_representations():
+        return [add_dimension(auds.representations.make_cached(
+            LogFiltSpec(frame_size=8192, fft_size=None, n_bands=24,
+                        fmin=65, fmax=2100, fps=5, unique_filters=True,
+                        sample_rate=44100), CACHE_DIR))]
+
+    @staticmethod
+    def target_representations():
+        return [SingleKeyMajMin()]

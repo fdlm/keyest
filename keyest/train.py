@@ -114,7 +114,7 @@ def main():
         max_history=3)
     checkpoint_on_improvement = trt.training.ImprovementTrigger(
         [model_checkpoints],
-        observed='val_acc',
+        observed='val_loss',
         compare=operator.gt)
     callbacks = [checkpoint_on_improvement]
     if args.model_history:
@@ -151,8 +151,12 @@ def main():
     # -------------------
     # Compute predictions
     # -------------------
+    print(colored('\nApplying on Training Set:\n', color='blue'))
+    test(model, train_src, join(experiment_dir, 'train'))
+    print(colored('\nApplying on Validation Set:\n', color='blue'))
+    test(model, val_src, join(experiment_dir, 'val'))
     print(colored('\nApplying on Test Set:\n', color='blue'))
-    test(model, test_src, experiment_dir)
+    test(model, test_src, join(experiment_dir, 'test'))
 
 
 if __name__ == '__main__':
