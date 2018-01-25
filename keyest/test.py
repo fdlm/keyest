@@ -13,7 +13,7 @@ import models
 
 USAGE = """
 Usage:
-    test.py --exp_dir=<S> --data=<S>
+    test.py --exp_dir=<S> --data=<S> [--save_pred] [--proc_aug]
 """
 
 
@@ -23,24 +23,28 @@ KEYS = ['A major', 'Bb major', 'B major', 'C major', 'Db major', 'D major',
         'D# minor', 'E minor', 'F minor', 'F# minor', 'G minor', 'G# minor']
 
 
-def test(model, data_set, dst_dir):
+def test(model, datasources, dst_dir, save_pred=True):
     if not os.path.exists(dst_dir):
         os.makedirs(dst_dir)
 
-    for piece in tqdm(data_set.datasources, desc='Predicting'):
-        piece_data = piece[:][:-1]  # remove target
-        mask = np.ones((1, piece_data[0].shape[1]), dtype=np.float32)
-        data = piece_data + (mask,)
-        predictions = model.process(*data)
-        pred_file = join(dst_dir, piece.name)
-        np.save(pred_file, predictions)
+    for piece in tqdm(datasources, desc='Predicting'):
+        piece_data = piece[:][:model.n_features]
+        if model.needs_mask:
+            mask = np.ones((1, piece_data[0].shape[1]), dtype=np.float32)
+            piece_data += (mask,)
+        predictions = model.process(*piece_data)[0]
+        if save_pred:
+            pred_file = join(dst_dir, piece.name)
+            np.save(pred_file, predictions)
         with open(join(dst_dir, piece.name + '.key.txt'), 'w') as f:
             f.write(KEYS[predictions.argmax()])
 
 
 def main():
     args = docopt(USAGE)
-    config = yaml.load(open(join(args['--exp_dir'], 'config.yaml')))
+    save_pred = args['--save_pred']
+    experiment_dir = args['--exp_dir']
+    config = yaml.load(open(join(experiment_dir, 'config.yaml')))
 
     # -------------------------
     # Load data and build model
@@ -74,12 +78,19 @@ def main():
     # -------------------
     # Compute predictions
     # -------------------
+
     print(colored('\nApplying on Training Set:\n', color='blue'))
-    test(model, train_src, join(args['--exp_dir'], 'train'))
+    if not args['--proc_aug']:
+        train_ds = [t for t in train_src.datasources if '.0' in t.name]
+    else:
+        train_ds = train_src.datasources
+    test(model, train_ds, join(experiment_dir, 'train'), save_pred)
     print(colored('\nApplying on Validation Set:\n', color='blue'))
-    test(model, val_src, join(args['--exp_dir'], 'val'))
+    test(model, val_src.datasources,
+         join(experiment_dir, 'val'), save_pred)
     print(colored('\nApplying on Test Set:\n', color='blue'))
-    test(model, test_src, join(args['--exp_dir'], 'test'))
+    test(model, test_src.datasources,
+         join(experiment_dir, 'test'), save_pred)
 
 
 if __name__ == "__main__":

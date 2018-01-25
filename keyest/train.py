@@ -21,7 +21,7 @@ USAGE = """
 Usage:
     train.py --data=<S> --model=<S> [--data_params=<S|yaml>] 
              [--model_params=<S|yaml>] [--out=<S>] [--force]
-             [--model_history]
+             [--model_history] [--save_pred]
 
 Options:
     --data=<S>  Dataset(s) to load (comma separated if multiple)
@@ -31,6 +31,7 @@ Options:
     --out=<S>  Experiment output directory (default is model name)
     --force  Overwrite experiment output directory if it already exists.
     --model_history  Save model for each epoch
+    --save_pred  Save prediction probabilities when testing
 """
 
 
@@ -44,6 +45,7 @@ class Args(object):
         self.out = args['--out']
         self.force = args['--force']
         self.model_history = args['--model_history']
+        self.save_pred = args['--save_pred']
 
 
 def main():
@@ -101,35 +103,34 @@ def main():
     train_batches = model.train_iterator(train_src)
     val_batches = model.test_iterator(val_src)
 
+    val_obs = {
+        'loss': model.loss,
+        'acc': trt.objectives.average_categorical_accuracy
+    }
+    val_obs.update(model.observables)
     validator = trt.training.Validator(
-        model, val_batches,
-        observables={
-            'loss': model.loss,
-            'acc': trt.objectives.average_categorical_accuracy
-        }
+        model, val_batches, observables=val_obs
     )
     model_checkpoints = trt.outputs.ModelCheckpoint(
-        model,
-        file_fmt=join(experiment_dir, 'best_model_ep_{epoch:03d}.pkl'),
+        model, file_fmt=join(experiment_dir, 'best_model_ep_{epoch:03d}.pkl'),
         max_history=3)
     checkpoint_on_improvement = trt.training.ImprovementTrigger(
-        [model_checkpoints],
-        observed='val_loss',
-        compare=operator.gt)
+        [model_checkpoints], observed='val_loss')
     callbacks = [checkpoint_on_improvement]
     if args.model_history:
         model.save(join(experiment_dir, 'model_init.pkl'))
         callbacks.append(trt.outputs.ModelCheckpoint(
             model, file_fmt=join(experiment_dir, 'model_ep_{epoch:03d}.pkl')))
 
-    print(colored('Training:\n', color='blue'))
+    observables = {'loss': model.loss,
+                   'acc': trt.objectives.average_categorical_accuracy}
+    observables.update(model.observables)
 
+    print(colored('Training:\n', color='blue'))
     trt.training.train(
         net=model, train_batches=train_batches,
         num_epochs=model.hypers['n_epochs'],
-        observables=dict({'loss': model.loss,
-                          'acc': trt.objectives.average_categorical_accuracy},
-                         **model.observables),
+        observables=observables,
         updater=model.update,
         regularizers=model.regularizers,
         validator=validator,
@@ -152,11 +153,14 @@ def main():
     # Compute predictions
     # -------------------
     print(colored('\nApplying on Training Set:\n', color='blue'))
-    test(model, train_src, join(experiment_dir, 'train'))
+    test(model, [t for t in train_src.datasources if '.0' in t.name],
+         join(experiment_dir, 'train'), args.save_pred)
     print(colored('\nApplying on Validation Set:\n', color='blue'))
-    test(model, val_src, join(experiment_dir, 'val'))
+    test(model, val_src.datasources,
+         join(experiment_dir, 'val'), args.save_pred)
     print(colored('\nApplying on Test Set:\n', color='blue'))
-    test(model, test_src, join(experiment_dir, 'test'))
+    test(model, test_src.datasources,
+         join(experiment_dir, 'test'), args.save_pred)
 
 
 if __name__ == '__main__':
