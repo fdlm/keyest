@@ -64,11 +64,13 @@ def test(process, data_src, dst_dir):
 
     for piece in tqdm(data_src.datasources, desc='Predicting'):
         piece_data = piece[:][:-1]  # remove target
-        if len(piece_data) == 1:
-            process_data = [np.array(piece_data).transpose(1, 0, 2)]
-        else:
+
+        # last index are tags
+        if piece_data[-1].shape[1] != 24:
             process_data = [np.array(piece_data[:-1]).transpose(1, 0, 2),
                             np.array(piece_data[-1])]
+        else:
+            process_data = [np.array(piece_data).transpose(1, 0, 2)]
 
         predictions = process(*process_data)[0]
         pred_file = join(dst_dir, piece.name)
@@ -97,8 +99,13 @@ def main():
     train_set, val_set, test_set = keyest.data.load(datasets=ds)
     target_representation = auds.representations.make_cached(SingleKeyMajMin(),
                                                              CACHE_DIR)
+
+    train_set = val_set
     source_representations = [
-        Precomputed(join(src_dir, 'outputs'), 'audio', 'key_classification')
+        Precomputed(
+            [join(src_dir, setup) for setup in ['train', 'val', 'test']],
+            view='audio', name='key_classification'
+        )
         for src_dir in args.prediction_dirs
     ]
 
@@ -128,11 +135,12 @@ def main():
         y_hat = tt.nnet.softmax(W.dot(x)[0] + b)
         params = [W, b]
         loss = tt.nnet.categorical_crossentropy(y_hat, y).mean()
-        updates = lnn.updates.adam(loss, params)
+        updates = lnn.updates.sgd(loss, params, learning_rate=1.)
         train = theano.function(inputs=[x, y], outputs=loss, updates=updates)
         evaluate = theano.function(inputs=[x, y], outputs=loss)
         process = theano.function(inputs=[x], outputs=y_hat)
 
+        # train_data = val_src[:]
         train_data = train_src[:]
         train_preds = np.array(train_data[:-1]).transpose(1, 0, 2)
         train_y = np.array(train_data[-1])
@@ -163,7 +171,7 @@ def main():
         params = [W_c, b_c, W_k, b_k]
 
         loss = tt.nnet.categorical_crossentropy(y_hat, y).mean()
-        updates = lnn.updates.adam(loss, params)
+        updates = lnn.updates.sgd(loss, params, learning_rate=0.1)
         train = theano.function(inputs=[x, t, y], outputs=loss,
                                 updates=updates)
         evaluate = theano.function(inputs=[x, t, y], outputs=loss)
