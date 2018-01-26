@@ -12,7 +12,7 @@ from keyest.config import EXPERIMENT_ROOT
 
 USAGE = """
 Usage:
-  avg_ensemble.py [--force] [--save_preds] [--temperature=<f>] 
+  avg_ensemble.py [--force] [--save_preds] [--temperature=<f>] [--with_train]
                   <ensemble_exp_id> <exp_ids>...
 """
 
@@ -55,7 +55,10 @@ def main():
 
     softmax = TemperatureSoftmax(temperature)
     first_exp_dir = join(EXPERIMENT_ROOT, args['<exp_ids>'][0])
-    for setup in ['train', 'val', 'test']:
+    setups = ['val', 'test']
+    if args['--with_train']:
+        setups.insert(0, 'train')
+    for setup in setups:
         os.makedirs(join(ensemble_dir, setup))
         for f in tqdm(glob(join(first_exp_dir, setup, '*.npy')), desc=setup):
             preds = [softmax(np.load(f))]
