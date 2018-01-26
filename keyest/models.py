@@ -24,6 +24,7 @@ from augmenters import CenterSnippet, RandomSnippet
 from trattoria.nets import NeuralNetwork
 from trattoria.objectives import (average_categorical_crossentropy,
                                   average_categorical_accuracy)
+from trattoria.iterators import augment, subset
 
 try:
     from lasagne.layers.dnn import MaxPool2DDNNLayer as MaxPool2DLayer
@@ -239,7 +240,7 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
 
     @staticmethod
     def target_representations():
-        return [SingleKeyMajMin()]
+        return [auds.representations.make_cached(SingleKeyMajMin(), CACHE_DIR)]
 
 
 class Eusipco2017Snippet(Eusipco2017):
@@ -1174,7 +1175,7 @@ class AllConvDistilled(NeuralNetwork, TrainableModel):
         )
 
     def test_iterator(self, data):
-        return trattoria.iterators.AugmentedIterator(
+        return augment(
             trattoria.iterators.SequenceClassificationIterator(
                 data.datasources,
                 batch_size=1,

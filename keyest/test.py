@@ -32,7 +32,7 @@ def test(model, datasources, dst_dir, save_pred=True):
         if model.needs_mask:
             mask = np.ones((1, piece_data[0].shape[1]), dtype=np.float32)
             piece_data += (mask,)
-        predictions = model.process(*piece_data)[0]
+        predictions = model.process(*piece_data)
         if save_pred:
             pred_file = join(dst_dir, piece.name)
             np.save(pred_file, predictions)

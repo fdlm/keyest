@@ -140,6 +140,13 @@ def load(datasets, augmented=True):
         train_datasets.append(cmdb_tr)
         val_datasets.append(cmdb_va)
         test_datasets.append(cmdb_te)
+    if 'keyfinder' in datasets:
+        keyfinder = Dataset.from_directory(
+            join(DATASET_DIR, 'keyfinder'),
+            views=[Views.audio, Views.key],
+            name='keyfinder'
+        )
+        test_datasets.append(keyfinder)
 
     train_dataset = sum(train_datasets, Dataset())
     val_dataset = sum(val_datasets, Dataset())
