@@ -13,7 +13,7 @@ import models
 
 USAGE = """
 Usage:
-    test.py --exp_dir=<S> --data=<S> [--save_pred] [--proc_aug]
+    test.py --exp_dir=<S> --data=<S> [--save_pred] [--proc_aug] [--no_train]
 """
 
 
@@ -79,12 +79,13 @@ def main():
     # Compute predictions
     # -------------------
 
-    print(colored('\nApplying on Training Set:\n', color='blue'))
-    if not args['--proc_aug']:
-        train_ds = [t for t in train_src.datasources if '.0' in t.name]
-    else:
-        train_ds = train_src.datasources
-    test(model, train_ds, join(experiment_dir, 'train'), save_pred)
+    if not args['--no_train']:
+        print(colored('\nApplying on Training Set:\n', color='blue'))
+        if not args['--proc_aug']:
+            train_ds = [t for t in train_src.datasources if '.0' in t.name]
+        else:
+            train_ds = train_src.datasources
+        test(model, train_ds, join(experiment_dir, 'train'), save_pred)
     print(colored('\nApplying on Validation Set:\n', color='blue'))
     test(model, val_src.datasources,
          join(experiment_dir, 'val'), save_pred)

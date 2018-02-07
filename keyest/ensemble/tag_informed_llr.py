@@ -21,8 +21,7 @@ from docopt import docopt
 from tqdm import tqdm
 from keyest.models import add_dimension
 
-import auds
-from auds.representations import SingleKeyMajMin, Precomputed
+from auds.representations import SingleKeyMajMin, Precomputed, make_cached
 
 import keyest.data
 from keyest.config import EXPERIMENT_ROOT, CACHE_DIR
@@ -31,7 +30,9 @@ from keyest.test import KEYS
 
 USAGE = """
 Usage:
-    tag_informed_llr.py [--simple] [--force] [--n_epochs=<I>] [--patience=<I>] --data=<S> --out=<S> <prediction_dirs>...
+    tag_informed_llr.py [--simple] [--force] [--n_epochs=<I>] [--patience=<I>] 
+                        [--train_on_val] [--n_tags=<I>] --data=<S> --out=<S> 
+                        <exp_ids>...
     
 Arguments:
     <prediction_dirs>  Directories with key predictions
@@ -43,6 +44,8 @@ Options:
     --force  Overwrite experiment output directory if it already exists.
     --n_epochs=<I>  Max number of epochs to train [default: 100000]
     --patience=<I>  Early stopping patience [default: 1000]
+    --train_on_val  Use validation set for training
+    --n_tags=<I>  Number of tags to use (PCA projected) [default: 65]
 """
 
 
@@ -51,14 +54,16 @@ class Args(object):
         args = docopt(USAGE)
         self.data = args['--data']
         self.out = args['--out']
-        self.prediction_dirs = args['<prediction_dirs>']
+        self.experiment_ids = args['<exp_ids>']
         self.force = args['--force']
         self.n_epochs = int(args['--n_epochs'])
         self.patience = int(args['--patience'])
         self.simple = args['--simple']
+        self.train_on_val = args['--train_on_val']
+        self.n_tags = int(args['--n_tags'])
 
 
-def test(process, data_src, dst_dir):
+def test(process, data_src, dst_dir, pca=None):
     if not os.path.exists(dst_dir):
         os.makedirs(dst_dir)
 
@@ -69,6 +74,8 @@ def test(process, data_src, dst_dir):
         if piece_data[-1].shape[1] != 24:
             process_data = [np.array(piece_data[:-1]).transpose(1, 0, 2),
                             np.array(piece_data[-1])]
+            if pca:
+                process_data[-1] = pca.transform(process_data[-1]).astype(np.float32)
         else:
             process_data = [np.array(piece_data).transpose(1, 0, 2)]
 
@@ -97,16 +104,16 @@ def main():
         ds = args.data
 
     train_set, val_set, test_set = keyest.data.load(datasets=ds)
-    target_representation = auds.representations.make_cached(SingleKeyMajMin(),
-                                                             CACHE_DIR)
+    target_representation = make_cached(SingleKeyMajMin(), CACHE_DIR)
+    if args.train_on_val:
+        train_set = val_set
 
-    train_set = val_set
     source_representations = [
         Precomputed(
-            [join(src_dir, setup) for setup in ['train', 'val', 'test']],
+            [join(EXPERIMENT_ROOT, exp_id, setup) for setup in ['train', 'val', 'test']],
             view='audio', name='key_classification'
         )
-        for src_dir in args.prediction_dirs
+        for exp_id in args.experiment_ids
     ]
 
     if not args.simple:
@@ -125,22 +132,23 @@ def main():
     print('Validation Set:  ', len(val_src))
     print('Test Set:        ', len(test_src))
 
-    n_models = len(args.prediction_dirs)
+    n_models = len(args.experiment_ids)
     x = tt.ftensor3('x')
     y = tt.fmatrix('y')
 
     if args.simple:
-        W = theano.shared(np.ones((1, n_models)).astype(np.float32), name='W')
-        b = theano.shared(np.zeros(24).astype(np.float32), name='b')
-        y_hat = tt.nnet.softmax(W.dot(x)[0] + b)
-        params = [W, b]
+        W = theano.shared(np.ones((1, n_models), dtype=np.float32), name='W')
+        b = theano.shared(np.zeros(24, dtype=np.float32), name='b')
+        temp = theano.shared(np.ones((1, n_models, 1), dtype=np.float32),
+                             broadcastable=(True, False, True), name='T')
+        y_hat = tt.nnet.softmax(W.dot(x / temp)[0] + b)
+        params = [W, b, temp]
         loss = tt.nnet.categorical_crossentropy(y_hat, y).mean()
-        updates = lnn.updates.sgd(loss, params, learning_rate=1.)
+        updates = lnn.updates.adam(loss, params, learning_rate=0.1)
         train = theano.function(inputs=[x, y], outputs=loss, updates=updates)
         evaluate = theano.function(inputs=[x, y], outputs=loss)
         process = theano.function(inputs=[x], outputs=y_hat)
 
-        # train_data = val_src[:]
         train_data = train_src[:]
         train_preds = np.array(train_data[:-1]).transpose(1, 0, 2)
         train_y = np.array(train_data[-1])
@@ -150,9 +158,10 @@ def main():
         val_preds = np.array(val_data[:-1]).transpose(1, 0, 2)
         val_y = np.array(val_data[-1])
         val_batch = [val_preds, val_y]
+        pca = None
 
     else:
-        n_tags = train_src[0][-2].shape[0]
+        n_tags = args.n_tags
         t = tt.fmatrix('t')
         W_c = theano.shared(
             np.random.normal(scale=0.1, size=(n_models, n_tags)).astype(np.float32), name='W_t')
@@ -160,18 +169,18 @@ def main():
         W_k = theano.shared(
             np.random.normal(scale=0.1, size=(24, n_tags)).astype(np.float32), name='W_b')
         b_k = theano.shared(np.zeros(24, dtype=np.float32), name='b_b')
-
+        temp = theano.shared(np.ones((1, n_models, 1), dtype=np.float32),
+                             broadcastable=(True, False, True), name='T')
         W_t = W_c.dot(t.T).T + b_c
         b_t = W_k.dot(t.T).T + b_k
-
         # There has to be a better way!
         y_hat = tt.nnet.softmax(
-            (W_t.dimshuffle(0, 1, 'x') * x).sum(1) + b_t
+            (W_t.dimshuffle(0, 1, 'x') * x / temp).sum(1) + b_t
         )
-        params = [W_c, b_c, W_k, b_k]
+        params = [W_c, b_c, W_k, b_k, temp]
 
         loss = tt.nnet.categorical_crossentropy(y_hat, y).mean()
-        updates = lnn.updates.sgd(loss, params, learning_rate=0.1)
+        updates = lnn.updates.adam(loss, params, learning_rate=0.01)
         train = theano.function(inputs=[x, t, y], outputs=loss,
                                 updates=updates)
         evaluate = theano.function(inputs=[x, t, y], outputs=loss)
@@ -180,12 +189,15 @@ def main():
         train_data = train_src[:]
         train_preds = np.array(train_data[:-2]).transpose(1, 0, 2)
         train_tags = np.array(train_data[-2])
+        from sklearn.decomposition import PCA
+        pca = PCA(n_tags).fit(train_tags)
+        train_tags = pca.transform(train_tags).astype(np.float32)
         train_y = np.array(train_data[-1])
         train_batch = [train_preds, train_tags, train_y]
 
         val_data = val_src[:]
         val_preds = np.array(val_data[:-2]).transpose(1, 0, 2)
-        val_tags = np.array(val_data[-2])
+        val_tags = pca.transform(np.array(val_data[-2])).astype(np.float32)
         val_y = np.array(val_data[-1])
         val_batch = [val_preds, val_tags, val_y]
 
@@ -193,27 +205,30 @@ def main():
     wait = 0
 
     epochs = tqdm(range(args.n_epochs))
-    for _ in epochs:
-        train_loss = train(*train_batch)
-        val_loss = evaluate(*val_batch)
+    try:
+        for _ in epochs:
+            train_loss = train(*train_batch)
+            val_loss = evaluate(*val_batch)
 
-        epochs.set_description('Loss: {:.5f}    Val Loss: {:.5f}'.format(
-            float(train_loss), float(val_loss)))
-        if val_loss < l_prev:
-            l_prev = val_loss
-            wait = 0
-        else:
-            wait += 1
-            if wait > args.patience:
-                break
+            epochs.set_description('Loss: {:.5f}    Val Loss: {:.5f}'.format(
+                float(train_loss), float(val_loss)))
+            if val_loss < l_prev:
+                l_prev = val_loss
+                wait = 0
+            else:
+                wait += 1
+                if wait > args.patience:
+                    break
+    except KeyboardInterrupt:
+        pass
 
     pickle.dump([p.get_value() for p in params],
                 open(join(experiment_dir, 'llr_params.pkl'), 'wb'),
                 protocol=pickle.HIGHEST_PROTOCOL)
 
-    test(process, train_src, join(experiment_dir, 'train'))
-    test(process, val_src, join(experiment_dir, 'val'))
-    test(process, test_src, join(experiment_dir, 'test'))
+    test(process, train_src, join(experiment_dir, 'train'), pca)
+    test(process, val_src, join(experiment_dir, 'val'), pca)
+    test(process, test_src, join(experiment_dir, 'test'), pca)
 
 
 if __name__ == "__main__":

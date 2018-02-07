@@ -1023,7 +1023,6 @@ class AllConvDistilled(NeuralNetwork, TrainableModel):
                  patience=10,
                  l2=1e-6,
                  snippet_length=100,
-                 teacher_experiment=None,
                  temperature=1.,
                  teacher_factor=1.,
                  gt_factor=1.):
@@ -1036,7 +1035,6 @@ class AllConvDistilled(NeuralNetwork, TrainableModel):
             patience=patience,
             l2=l2,
             snippet_length=snippet_length,
-            teacher_experiment=teacher_experiment,
             temperature=temperature,
             teacher_factor=teacher_factor,
             gt_factor=gt_factor
@@ -1196,11 +1194,10 @@ class AllConvDistilled(NeuralNetwork, TrainableModel):
 
     @staticmethod
     def target_representations():
-        from keyest.config import EXPERIMENT_ROOT
         from os.path import join
         return [
             auds.representations.Precomputed(
-                [join(EXPERIMENT_ROOT, 'allconv_gscmbb_24_0.1_2', setup)
+                [join('/home/filip/.tmp/teacher', setup)
                  for setup in ['train', 'val', 'test']],
                 'audio', 'teacher_predictions'
             ),
