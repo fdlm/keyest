@@ -147,6 +147,41 @@ def load(datasets, augmented=True):
             name='keyfinder'
         )
         test_datasets.append(keyfinder)
+    if 'beatles' in datasets:
+        beatles = Dataset.from_directory(
+            join(DATASET_DIR, 'presegkey_beatles'),
+            views=[Views.audio, Views.key],
+            name='Beatles Presegmented'
+        )
+        test_datasets.append(beatles)
+    if 'queen' in datasets:
+        queen = Dataset.from_directory(
+            join(DATASET_DIR, 'presegkey_queen'),
+            views=[Views.audio, Views.key],
+            name='Queen Presegmented'
+        )
+        test_datasets.append(queen)
+    if 'zweieck' in datasets:
+        zweieck = Dataset.from_directory(
+            join(DATASET_DIR, 'presegkey_zweieck'),
+            views=[Views.audio, Views.key],
+            name='Zweieck Presegmented'
+        )
+        test_datasets.append(zweieck)
+    if 'robbie' in datasets:
+        robbie = Dataset.from_directory(
+            join(DATASET_DIR, 'presegkey_robbiewilliams'),
+            views=[Views.audio, Views.key],
+            name='Robbie Williams Presegmented'
+        )
+        test_datasets.append(robbie)
+    if 'rock' in datasets:
+        rock = Dataset.from_directory(
+            join(DATASET_DIR, 'presegkey_rock'),
+            views=[Views.audio, Views.key],
+            name='Rock Presegmented'
+        )
+        test_datasets.append(rock)
 
     train_dataset = sum(train_datasets, Dataset())
     val_dataset = sum(val_datasets, Dataset())
