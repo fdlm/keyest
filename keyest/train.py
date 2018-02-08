@@ -72,7 +72,8 @@ def main():
     else:
         ds = args.data
 
-    train_set, val_set, test_set = data.load(datasets=ds, **args.data_params)
+    train_set, val_set, test_set = data.load(datasets=ds.split(','),
+                                             **args.data_params)
     Model = models.get_model(args.model)
     train_src, val_src, test_src = data.create_datasources(
         datasets=[train_set, val_set, test_set],
@@ -94,7 +95,7 @@ def main():
                'model_params': model.hypers,
                'data': args.data.split(','),
                'data_params': args.data_params,
-               },
+              },
               open(join(experiment_dir, 'config.yaml'), 'w'))
 
     # -----------
