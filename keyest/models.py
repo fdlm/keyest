@@ -1334,7 +1334,8 @@ class Unet(NeuralNetwork, TrainableModel):
 
     def compile_process_function(self):
         self._process = theano.function(
-            inputs=[self.spec_in], outputs=lasagne.layers.get_output(self.net, deterministic=True),
+            inputs=[self.spec_in], outputs=lasagne.layers.get_output(
+                self.net, deterministic=True),
             name='process'
         )
 
@@ -1354,16 +1355,28 @@ class Unet(NeuralNetwork, TrainableModel):
 
     def test_iterator(self, data):
         def pad(batch_iterator):
-            # TODO: mirror instead of 0-pad?
+            def mirror_pad(src, trg):
+                trg[:begin] = src[:begin][::-1]
+                trg[begin:end] = src
+                trg[end:] = src[-(new_length - end):][::-1]
+
             for spec, mask, targ in batch_iterator:
                 old_length = spec.shape[1]
                 new_length = int(np.ceil(old_length / 8.) * 8)
+
+                if old_length >= new_length:
+                    continue
+
                 new_spec = np.zeros((1, new_length,) + spec.shape[2:], dtype=spec.dtype)
                 new_mask = np.zeros((1, new_length,) + mask.shape[2:], dtype=mask.dtype)
                 new_targ = np.zeros((1, new_length,) + targ.shape[2:], dtype=targ.dtype)
-                new_spec[0, :old_length] = spec
-                new_mask[0, :old_length] = mask
-                new_targ[0, :old_length] = targ
+                begin = int((new_length - old_length) / 2)
+                end = begin + old_length
+
+                mirror_pad(spec[0], new_spec[0])
+                mirror_pad(mask[0], new_mask[0])
+                mirror_pad(targ[0], new_targ[0])
+
                 yield new_spec, new_mask, new_targ
 
         return trattoria.iterators.AugmentedIterator(
