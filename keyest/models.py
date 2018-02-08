@@ -11,14 +11,15 @@ from lasagne.layers import (DenseLayer, InputLayer, dropout_channels,
                             ReshapeLayer, Conv2DLayer, batch_norm,
                             MaxPool2DLayer, GlobalPoolLayer, NonlinearityLayer,
                             FlattenLayer, DimshuffleLayer, BatchNormLayer,
-                            ConcatLayer, ExpressionLayer, ElemwiseSumLayer)
+                            ConcatLayer, ExpressionLayer, ElemwiseSumLayer,
+                            TransposedConv2DLayer)
 from lasagne.nonlinearities import softmax, elu
 from pastitsio.layers import AverageLayer, ExpressionMergeLayer
 from pastitsio.nonlinearities import TemperatureSoftmax
 
 import auds
 import trattoria
-from auds.representations import LogFiltSpec, SingleKeyMajMin
+from auds.representations import LogFiltSpec, SingleKeyMajMin, KeysMajMin
 from config import CACHE_DIR
 from augmenters import CenterSnippet, RandomSnippet
 from trattoria.nets import NeuralNetwork
@@ -1203,3 +1204,185 @@ class AllConvDistilled(NeuralNetwork, TrainableModel):
             ),
             auds.representations.make_cached(SingleKeyMajMin(), CACHE_DIR)
         ]
+
+
+def flatten_target_sequence(it):
+    for batch in it:
+        target = batch[-1]
+        yield batch[:-1], target.reshape(-1, target.shape[-1])
+
+
+class Unet(NeuralNetwork, TrainableModel):
+
+    def __init__(self,
+                 feature_shape,
+                 n_filters=2,
+                 filter_size=3,
+                 n_epochs=100,
+                 learning_rate=0.001,
+                 patience=10,
+                 l2=0.0,
+                 snippet_length=400,
+                 batch_size=8,
+                 ):
+
+        self._hypers = dict(
+            n_filters=n_filters,
+            filter_size=filter_size,
+            n_epochs=n_epochs,
+            learning_rate=learning_rate,
+            patience=patience,
+            l2=l2,
+            snippet_length=snippet_length,
+            batch_size=batch_size
+        )
+
+        nonlin = lasagne.nonlinearities.elu
+        init_conv = lasagne.init.HeNormal
+
+        def conv_bn(net, n_filters, filter_size):
+            return batch_norm(Conv2DLayer(
+                net, num_filters=n_filters, filter_size=filter_size,
+                stride=1, pad='same', W=init_conv(), nonlinearity=nonlin))
+
+        def deconv_bn(net, n_filters):
+            return batch_norm(TransposedConv2DLayer(
+                net, num_filters=n_filters, filter_size=2, stride=2,
+                nonlinearity=nonlin))
+
+        self.spec_in = tt.ftensor3('spec_in')
+        self.mask_in = tt.fmatrix('mask_in')
+
+        n_spec_bins = feature_shape[-1] - 1
+        net = InputLayer((None, None) + feature_shape, input_var=self.spec_in)
+        batch_size, n_time_steps, _ = net.input_var.shape
+        # remove last spectral bin so num bins is divisible by two 3 times
+        net = lasagne.layers.SliceLayer(net, slice(0, -1), -1)
+        net = ReshapeLayer(net, (batch_size, 1, n_time_steps, n_spec_bins))
+
+        # encoder
+        net = conv_bn(net, n_filters, filter_size)
+        net = conv_bn(net, n_filters, filter_size)
+        p1 = net
+        net = MaxPool2DLayer(net, pool_size=2, stride=2, name='pool1')
+
+        net = conv_bn(net, 2 * n_filters, filter_size)
+        net = conv_bn(net, 2 * n_filters, filter_size)
+        p2 = net
+        net = MaxPool2DLayer(net, pool_size=2, stride=2, name='pool2')
+
+        net = conv_bn(net, 4 * n_filters, filter_size)
+        net = conv_bn(net, 4 * n_filters, filter_size)
+        p3 = net
+        net = MaxPool2DLayer(net, pool_size=2, stride=2, name='pool3')
+
+        # bottlneck
+        net = conv_bn(net, 8 * n_filters, filter_size)
+        net = conv_bn(net, 8 * n_filters, filter_size)
+
+        # decoder
+        net = deconv_bn(net, 4 * n_filters)
+        net = ElemwiseSumLayer((p3, net), name='skip')
+        net = conv_bn(net, 4 * n_filters, filter_size)
+        net = conv_bn(net, 4 * n_filters, filter_size)
+
+        net = deconv_bn(net, 2 * n_filters)
+        net = ElemwiseSumLayer((p2, net), name='skip')
+        net = conv_bn(net, 2 * n_filters, filter_size)
+        net = conv_bn(net, 2 * n_filters, filter_size)
+
+        net = deconv_bn(net, n_filters)
+        net = ElemwiseSumLayer((p1, net), name='skip')
+        net = conv_bn(net, n_filters, filter_size)
+        net = conv_bn(net, n_filters, filter_size)
+
+        # classifier
+        net = Conv2DLayer(net, num_filters=25, filter_size=(1, n_spec_bins),
+                          nonlinearity=None, pad=0, name='classification')
+        net = FlattenLayer(net, outdim=3)
+        net = DimshuffleLayer(net, (0, 2, 1))
+        net = ReshapeLayer(net, (batch_size * n_time_steps, 25))
+        net = NonlinearityLayer(net, softmax)
+
+        y = tt.ftensor3('y')
+        super(Unet, self).__init__(net, y)
+
+    @property
+    def needs_mask(self):
+        return True
+
+    def get_inputs(self):
+        return [self.spec_in, self.mask_in]
+
+    @property
+    def hypers(self):
+        return self._hypers
+
+    def update(self, loss, params):
+        return lasagne.updates.adam(loss, params,
+                                    learning_rate=self.hypers['learning_rate'])
+
+    def loss(self, predictions, targets):
+        targets = targets.reshape((-1, 25))
+        mask = self.mask_in.flatten()
+        return average_categorical_crossentropy(predictions, targets, mask)
+
+    @property
+    def regularizers(self):
+        return [lasagne.regularization.regularize_layer_params(
+            self.net, lasagne.regularization.l2) * self.hypers['l2']]
+
+    def compile_process_function(self):
+        self._process = theano.function(
+            inputs=[self.spec_in], outputs=lasagne.layers.get_output(self.net, deterministic=True),
+            name='process'
+        )
+
+    def train_iterator(self, data):
+        return trattoria.iterators.SubsetIterator(
+            trattoria.iterators.AugmentedIterator(
+                trattoria.iterators.SequenceIterator(
+                    data.datasources,
+                    batch_size=self.hypers['batch_size'],
+                    shuffle=True,
+                    fill_last=True,
+                ),
+                RandomSnippet(snippet_length=self.hypers['snippet_length'],
+                              target_is_sequence=True)
+            ),
+        )
+
+    def test_iterator(self, data):
+        def pad(batch_iterator):
+            # TODO: mirror instead of 0-pad?
+            for spec, mask, targ in batch_iterator:
+                old_length = spec.shape[1]
+                new_length = int(np.ceil(old_length / 8.) * 8)
+                new_spec = np.zeros((1, new_length,) + spec.shape[2:], dtype=spec.dtype)
+                new_mask = np.zeros((1, new_length,) + mask.shape[2:], dtype=mask.dtype)
+                new_targ = np.zeros((1, new_length,) + targ.shape[2:], dtype=targ.dtype)
+                new_spec[0, :old_length] = spec
+                new_mask[0, :old_length] = mask
+                new_targ[0, :old_length] = targ
+                yield new_spec, new_mask, new_targ
+
+        return trattoria.iterators.AugmentedIterator(
+                trattoria.iterators.SequenceIterator(
+                    data.datasources,
+                    batch_size=1,
+                    shuffle=True,
+                    fill_last=True,
+                ),
+                pad
+            )
+
+    @staticmethod
+    def source_representations():
+        return [auds.representations.make_cached(
+            LogFiltSpec(frame_size=8192, fft_size=None, n_bands=24,
+                        fmin=65, fmax=2100, fps=5, unique_filters=True,
+                        sample_rate=44100), CACHE_DIR)]
+
+    @staticmethod
+    def target_representations():
+        return [auds.representations.make_cached(KeysMajMin(fps=5), CACHE_DIR)]

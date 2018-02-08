@@ -14,7 +14,7 @@ import data
 import models
 import trattoria as trt
 from config import EXPERIMENT_ROOT
-from test import test
+from test import test, test_unet
 
 
 USAGE = """
@@ -106,7 +106,7 @@ def main():
 
     val_obs = {
         'loss': model.loss,
-        'acc': trt.objectives.average_categorical_accuracy
+        # 'acc': trt.objectives.average_categorical_accuracy
     }
     val_obs.update(model.observables)
     validator = trt.training.Validator(
@@ -124,7 +124,8 @@ def main():
             model, file_fmt=join(experiment_dir, 'model_ep_{epoch:03d}.pkl')))
 
     observables = {'loss': model.loss,
-                   'acc': trt.objectives.average_categorical_accuracy}
+                   # 'acc': trt.objectives.average_categorical_accuracy
+                   }
     observables.update(model.observables)
 
     print(colored('Training:\n', color='blue'))
@@ -154,13 +155,13 @@ def main():
     # Compute predictions
     # -------------------
     print(colored('\nApplying on Training Set:\n', color='blue'))
-    test(model, [t for t in train_src.datasources if '.0' in t.name],
+    test_unet(model, [t for t in train_src.datasources if '.0' in t.name],
          join(experiment_dir, 'train'), args.save_pred)
     print(colored('\nApplying on Validation Set:\n', color='blue'))
-    test(model, val_src.datasources,
+    test_unet(model, val_src.datasources,
          join(experiment_dir, 'val'), args.save_pred)
     print(colored('\nApplying on Test Set:\n', color='blue'))
-    test(model, test_src.datasources,
+    test_unet(model, test_src.datasources,
          join(experiment_dir, 'test'), args.save_pred)
 
 

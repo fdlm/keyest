@@ -182,6 +182,15 @@ def load(datasets, augmented=True):
             name='Rock Presegmented'
         )
         test_datasets.append(rock)
+    if 'unet' in datasets:
+        beatles = Dataset.from_directory(
+            join(DATASET_DIR, 'beatles'),
+            views=[Views.audio, Views.keys],
+            name='Beatles'
+        )
+        train_datasets.append(beatles)
+        val_datasets.append(beatles)
+        test_datasets.append(beatles)
 
     train_dataset = sum(train_datasets, Dataset())
     val_dataset = sum(val_datasets, Dataset())
