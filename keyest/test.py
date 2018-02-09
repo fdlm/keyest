@@ -32,31 +32,12 @@ def test(model, datasources, dst_dir, save_pred=True):
         if model.needs_mask:
             mask = np.ones((1, piece_data[0].shape[1]), dtype=np.float32)
             piece_data += (mask,)
+        if piece_data[0].ndim < 3:
+            piece_data[0].shape = (1,) + piece_data[0].shape
         predictions = model.process(*piece_data)
         if save_pred:
             pred_file = join(dst_dir, piece.name)
             np.save(pred_file, predictions)
-        with open(join(dst_dir, piece.name + '.key.txt'), 'w') as f:
-            f.write(KEYS[predictions.argmax()])
-
-
-def test_unet(model, datasources, dst_dir, save_pred=True):
-    if not os.path.exists(dst_dir):
-        os.makedirs(dst_dir)
-
-    for piece in tqdm(datasources, desc='Predicting'):
-        spec = piece[:][:model.n_features][0]
-        old_length = spec.shape[0]
-        new_length = int(np.ceil(old_length / 8.) * 8)
-        new_spec = np.zeros((1, new_length,) + spec.shape[1:], dtype=spec.dtype)
-        new_spec[0, :old_length] = spec
-        # if model.needs_mask:
-        #     mask = np.ones((1, piece_data[0].shape[1]), dtype=np.float32)
-        #     piece_data += (mask,)
-        predictions = model.process(new_spec)
-        if save_pred:
-            pred_file = join(dst_dir, piece.name)
-            np.save(pred_file, predictions[:old_length])
         # with open(join(dst_dir, piece.name + '.key.txt'), 'w') as f:
         #     f.write(KEYS[predictions.argmax()])
 

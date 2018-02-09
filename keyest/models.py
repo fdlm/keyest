@@ -12,20 +12,21 @@ from lasagne.layers import (DenseLayer, InputLayer, dropout_channels,
                             MaxPool2DLayer, GlobalPoolLayer, NonlinearityLayer,
                             FlattenLayer, DimshuffleLayer, BatchNormLayer,
                             ConcatLayer, ExpressionLayer, ElemwiseSumLayer,
-                            TransposedConv2DLayer)
+                            TransposedConv2DLayer, SliceLayer, PadLayer)
 from lasagne.nonlinearities import softmax, elu
-from pastitsio.layers import AverageLayer, ExpressionMergeLayer
+from pastitsio.layers import (AverageLayer, ExpressionMergeLayer,
+                              ReflectDimLayer)
 from pastitsio.nonlinearities import TemperatureSoftmax
 
 import auds
 import trattoria
 from auds.representations import LogFiltSpec, SingleKeyMajMin, KeysMajMin
 from config import CACHE_DIR
-from augmenters import CenterSnippet, RandomSnippet
+from augmenters import RandomSnippet
 from trattoria.nets import NeuralNetwork
 from trattoria.objectives import (average_categorical_crossentropy,
                                   average_categorical_accuracy)
-from trattoria.iterators import augment, subset
+from trattoria.iterators import augment
 
 try:
     from lasagne.layers.dnn import MaxPool2DDNNLayer as MaxPool2DLayer
@@ -1224,6 +1225,7 @@ class Unet(NeuralNetwork, TrainableModel):
                  l2=0.0,
                  snippet_length=400,
                  batch_size=8,
+                 reflect_padding=False,
                  ):
 
         self._hypers = dict(
@@ -1234,13 +1236,21 @@ class Unet(NeuralNetwork, TrainableModel):
             patience=patience,
             l2=l2,
             snippet_length=snippet_length,
-            batch_size=batch_size
+            batch_size=batch_size,
+            reflect_padding=reflect_padding
         )
 
         nonlin = lasagne.nonlinearities.elu
         init_conv = lasagne.init.HeNormal
 
-        def conv_bn(net, n_filters, filter_size):
+        def conv_bn_reflect(net, n_filters, filter_size):
+            net = Conv2DLayer(net, num_filters=n_filters, filter_size=filter_size,
+                              stride=1, pad=0, W=init_conv(), nonlinearity=nonlin)
+            net = ReflectDimLayer(net, (filter_size // 2, filter_size // 2), 2)
+            net = ReflectDimLayer(net, (filter_size // 2, filter_size // 2), 3)
+            return batch_norm(net)
+
+        def conv_bn_zero(net, n_filters, filter_size):
             return batch_norm(Conv2DLayer(
                 net, num_filters=n_filters, filter_size=filter_size,
                 stride=1, pad='same', W=init_conv(), nonlinearity=nonlin))
@@ -1250,15 +1260,32 @@ class Unet(NeuralNetwork, TrainableModel):
                 net, num_filters=n_filters, filter_size=2, stride=2,
                 nonlinearity=nonlin))
 
+        conv_bn = conv_bn_reflect if reflect_padding else conv_bn_zero
+
         self.spec_in = tt.ftensor3('spec_in')
         self.mask_in = tt.fmatrix('mask_in')
+        self.min_time_unit = 8
 
         n_spec_bins = feature_shape[-1] - 1
         net = InputLayer((None, None) + feature_shape, input_var=self.spec_in)
         batch_size, n_time_steps, _ = net.input_var.shape
         # remove last spectral bin so num bins is divisible by two 3 times
-        net = lasagne.layers.SliceLayer(net, slice(0, -1), -1)
+        net = SliceLayer(net, slice(0, -1), -1)
         net = ReshapeLayer(net, (batch_size, 1, n_time_steps, n_spec_bins))
+
+        # compute padding so that max-pooling works
+        old_length = n_time_steps
+        new_length = tt.cast(
+            tt.ceil(tt.cast(old_length, 'float32') /
+                    np.float32(self.min_time_unit))
+            * self.min_time_unit,
+            'int32')
+        begin = (new_length - old_length) / 2
+        end = begin + old_length
+        if reflect_padding:
+            net = ReflectDimLayer(net, width=(begin, new_length - end), dim=2)
+        else:
+            net = PadLayer(net, [(begin, new_length - end), (0, 0)])
 
         # encoder
         net = conv_bn(net, n_filters, filter_size)
@@ -1300,8 +1327,11 @@ class Unet(NeuralNetwork, TrainableModel):
         net = Conv2DLayer(net, num_filters=25, filter_size=(1, n_spec_bins),
                           nonlinearity=None, pad=0, name='classification')
         net = FlattenLayer(net, outdim=3)
+        # remove padding that was added in the beginning
+        net = SliceLayer(net, slice(begin, end), name='cut away padding')
+
         net = DimshuffleLayer(net, (0, 2, 1))
-        net = ReshapeLayer(net, (batch_size * n_time_steps, 25))
+        net = ReshapeLayer(net, (-1, 25))
         net = NonlinearityLayer(net, softmax)
 
         y = tt.ftensor3('y')
@@ -1309,7 +1339,7 @@ class Unet(NeuralNetwork, TrainableModel):
 
     @property
     def needs_mask(self):
-        return True
+        return False
 
     def get_inputs(self):
         return [self.spec_in, self.mask_in]
@@ -1354,31 +1384,6 @@ class Unet(NeuralNetwork, TrainableModel):
         )
 
     def test_iterator(self, data):
-        def pad(batch_iterator):
-            def mirror_pad(src, trg):
-                trg[:begin] = src[:begin][::-1]
-                trg[begin:end] = src
-                trg[end:] = src[-(new_length - end):][::-1]
-
-            for spec, mask, targ in batch_iterator:
-                old_length = spec.shape[1]
-                new_length = int(np.ceil(old_length / 8.) * 8)
-
-                if old_length >= new_length:
-                    continue
-
-                new_spec = np.zeros((1, new_length,) + spec.shape[2:], dtype=spec.dtype)
-                new_mask = np.zeros((1, new_length,) + mask.shape[2:], dtype=mask.dtype)
-                new_targ = np.zeros((1, new_length,) + targ.shape[2:], dtype=targ.dtype)
-                begin = int((new_length - old_length) / 2)
-                end = begin + old_length
-
-                mirror_pad(spec[0], new_spec[0])
-                mirror_pad(mask[0], new_mask[0])
-                mirror_pad(targ[0], new_targ[0])
-
-                yield new_spec, new_mask, new_targ
-
         return trattoria.iterators.AugmentedIterator(
                 trattoria.iterators.SequenceIterator(
                     data.datasources,
@@ -1386,7 +1391,6 @@ class Unet(NeuralNetwork, TrainableModel):
                     shuffle=True,
                     fill_last=True,
                 ),
-                pad
             )
 
     @staticmethod

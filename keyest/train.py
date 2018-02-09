@@ -14,7 +14,7 @@ import data
 import models
 import trattoria as trt
 from config import EXPERIMENT_ROOT
-from test import test, test_unet
+from test import test
 
 
 USAGE = """
@@ -142,9 +142,10 @@ def main():
     )
 
     # load best parameters
-    model.load(model_checkpoints.history[-1])
-    os.symlink(basename(model_checkpoints.history[-1]),
-               join(experiment_dir, 'best_model.pkl'))
+    if len(model_checkpoints.history) > 0:
+        model.load(model_checkpoints.history[-1])
+        os.symlink(basename(model_checkpoints.history[-1]),
+                   join(experiment_dir, 'best_model.pkl'))
     # create madmom neural network processor if possible
     if hasattr(model, 'to_madmom_processor'):
         pickle.dump(model.to_madmom_processor(),
@@ -155,13 +156,13 @@ def main():
     # Compute predictions
     # -------------------
     print(colored('\nApplying on Training Set:\n', color='blue'))
-    test_unet(model, [t for t in train_src.datasources if '.0' in t.name],
+    test(model, [t for t in train_src.datasources if '.0' in t.name],
          join(experiment_dir, 'train'), args.save_pred)
     print(colored('\nApplying on Validation Set:\n', color='blue'))
-    test_unet(model, val_src.datasources,
+    test(model, val_src.datasources,
          join(experiment_dir, 'val'), args.save_pred)
     print(colored('\nApplying on Test Set:\n', color='blue'))
-    test_unet(model, test_src.datasources,
+    test(model, test_src.datasources,
          join(experiment_dir, 'test'), args.save_pred)
 
 
