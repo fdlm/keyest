@@ -86,6 +86,10 @@ class TrainableModel(object):
     def target_representations():
         raise NotImplementedError('Specify target representation!')
 
+    @abstractmethod
+    def save_target(self, name, predictions):
+        pass
+
 
 def get_model(model):
     return globals()[model]
@@ -243,6 +247,10 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
     @staticmethod
     def target_representations():
         return [auds.representations.make_cached(SingleKeyMajMin(), CACHE_DIR)]
+
+    def save_target(self, name, predictions):
+        with open(name + '.key.txt', 'w') as f:
+            f.write(SingleKeyMajMin().map_back(predictions))
 
 
 class Eusipco2017Snippet(Eusipco2017):
@@ -524,6 +532,10 @@ class TagSelectedSnippet(NeuralNetwork, TrainableModel):
     def target_representations():
         return [auds.representations.make_cached(SingleKeyMajMin(), CACHE_DIR)]
 
+    def save_target(self, name, predictions):
+        with open(name + '.key.txt', 'w') as f:
+            f.write(SingleKeyMajMin().map_back(predictions))
+
 
 def remove_mask(batch_iterator):
     for batch in batch_iterator:
@@ -706,6 +718,10 @@ class AllConv(NeuralNetwork, TrainableModel):
     @staticmethod
     def target_representations():
         return [auds.representations.make_cached(SingleKeyMajMin(), CACHE_DIR)]
+
+    def save_target(self, name, predictions):
+        with open(name + '.key.txt', 'w') as f:
+            f.write(SingleKeyMajMin().map_back(predictions))
 
 
 class AllConvTags(NeuralNetwork, TrainableModel):
@@ -916,6 +932,10 @@ class AllConvTags(NeuralNetwork, TrainableModel):
     @staticmethod
     def target_representations():
         return [auds.representations.make_cached(SingleKeyMajMin(), CACHE_DIR)]
+
+    def save_target(self, name, predictions):
+        with open(name + '.key.txt', 'w') as f:
+            f.write(SingleKeyMajMin().map_back(predictions))
 
 
 def erm_key_target(batch_iterator):
@@ -1206,6 +1226,10 @@ class AllConvDistilled(NeuralNetwork, TrainableModel):
             auds.representations.make_cached(SingleKeyMajMin(), CACHE_DIR)
         ]
 
+    def save_target(self, name, predictions):
+        with open(name + '.key.txt', 'w') as f:
+            f.write(SingleKeyMajMin().map_back(predictions))
+
 
 def flatten_target_sequence(it):
     for batch in it:
@@ -1411,3 +1435,8 @@ class Unet(NeuralNetwork, TrainableModel):
     @staticmethod
     def target_representations():
         return [auds.representations.make_cached(KeysMajMin(fps=5), CACHE_DIR)]
+
+    def save_target(self, name, predictions):
+        keys = KeysMajMin(fps=5).map_back(predictions)
+        np.savetxt(name + '.keys.txt', keys, fmt=['%.3f', '%.3f', '%s'],
+                   delimiter='\t')

@@ -25,7 +25,6 @@ from auds.representations import SingleKeyMajMin, Precomputed, make_cached
 
 import keyest.data
 from keyest.config import EXPERIMENT_ROOT, CACHE_DIR
-from keyest.test import KEYS
 
 
 USAGE = """
@@ -83,7 +82,7 @@ def test(process, data_src, dst_dir, pca=None):
         pred_file = join(dst_dir, piece.name)
         np.save(pred_file, predictions)
         with open(join(dst_dir, piece.name + '.key.txt'), 'w') as f:
-            f.write(KEYS[predictions.argmax()])
+            SingleKeyMajMin().map_back(predictions)
 
 
 def main():
