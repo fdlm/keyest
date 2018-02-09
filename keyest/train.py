@@ -106,7 +106,7 @@ def main():
 
     val_obs = {
         'loss': model.loss,
-        # 'acc': trt.objectives.average_categorical_accuracy
+        'acc': trt.objectives.average_categorical_accuracy
     }
     val_obs.update(model.observables)
     validator = trt.training.Validator(
@@ -124,7 +124,7 @@ def main():
             model, file_fmt=join(experiment_dir, 'model_ep_{epoch:03d}.pkl')))
 
     observables = {'loss': model.loss,
-                   # 'acc': trt.objectives.average_categorical_accuracy
+                   'acc': trt.objectives.average_categorical_accuracy
                    }
     observables.update(model.observables)
 

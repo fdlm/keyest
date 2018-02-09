@@ -1352,6 +1352,14 @@ class Unet(NeuralNetwork, TrainableModel):
         return lasagne.updates.adam(loss, params,
                                     learning_rate=self.hypers['learning_rate'])
 
+    @property
+    def observables(self):
+        def acc(p, t):
+            t = t.reshape((-1, 25))
+            m = self.mask_in.flatten()
+            return average_categorical_accuracy(p, t, m)
+        return {'acc': acc}
+
     def loss(self, predictions, targets):
         targets = targets.reshape((-1, 25))
         mask = self.mask_in.flatten()
