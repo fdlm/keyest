@@ -117,7 +117,7 @@ def main():
         max_history=3)
     checkpoint_on_improvement = trt.training.ImprovementTrigger(
         [model_checkpoints], observed='val_loss')
-    callbacks = [checkpoint_on_improvement]
+    callbacks = [checkpoint_on_improvement, trt.training.stop_on_nan()]
     if args.model_history:
         model.save(join(experiment_dir, 'model_init.pkl'))
         callbacks.append(trt.outputs.ModelCheckpoint(

@@ -191,11 +191,14 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
         return {'lr': lambda *args: self.learning_rate}
 
     def train_iterator(self, data):
-        return trattoria.iterators.SequenceClassificationIterator(
-            data.datasources,
-            batch_size=8,
-            shuffle=True,
-            fill_last=True,
+        return trattoria.iterators.SubsetIterator(
+            trattoria.iterators.SequenceClassificationIterator(
+                data.datasources,
+                batch_size=8,
+                shuffle=True,
+                fill_last=True,
+            ),
+            percentage=0.25
         )
 
     def test_iterator(self, data):
