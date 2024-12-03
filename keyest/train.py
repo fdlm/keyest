@@ -124,7 +124,8 @@ def main():
             model, file_fmt=join(experiment_dir, 'model_ep_{epoch:03d}.pkl')))
 
     observables = {'loss': model.loss,
-                   'acc': trt.objectives.average_categorical_accuracy}
+                   'acc': trt.objectives.average_categorical_accuracy
+                   }
     observables.update(model.observables)
 
     print(colored('Training:\n', color='blue'))
@@ -141,9 +142,10 @@ def main():
     )
 
     # load best parameters
-    model.load(model_checkpoints.history[-1])
-    os.symlink(basename(model_checkpoints.history[-1]),
-               join(experiment_dir, 'best_model.pkl'))
+    if len(model_checkpoints.history) > 0:
+        model.load(model_checkpoints.history[-1])
+        os.symlink(basename(model_checkpoints.history[-1]),
+                   join(experiment_dir, 'best_model.pkl'))
     # create madmom neural network processor if possible
     if hasattr(model, 'to_madmom_processor'):
         pickle.dump(model.to_madmom_processor(),

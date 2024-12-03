@@ -17,12 +17,6 @@ Usage:
 """
 
 
-KEYS = ['A major', 'Bb major', 'B major', 'C major', 'Db major', 'D major',
-        'Eb major', 'E major', 'F major', 'F# major', 'G major', 'Ab major',
-        'A minor', 'Bb minor', 'B minor', 'C minor', 'C# minor', 'D minor',
-        'D# minor', 'E minor', 'F minor', 'F# minor', 'G minor', 'G# minor']
-
-
 def test(model, datasources, dst_dir, save_pred=True):
     if not os.path.exists(dst_dir):
         os.makedirs(dst_dir)
@@ -32,12 +26,13 @@ def test(model, datasources, dst_dir, save_pred=True):
         if model.needs_mask:
             mask = np.ones((1, piece_data[0].shape[1]), dtype=np.float32)
             piece_data += (mask,)
+        if piece_data[0].ndim < 3:
+            piece_data[0].shape = (1,) + piece_data[0].shape
         predictions = model.process(*piece_data)
         if save_pred:
             pred_file = join(dst_dir, piece.name)
             np.save(pred_file, predictions)
-        with open(join(dst_dir, piece.name + '.key.txt'), 'w') as f:
-            f.write(KEYS[predictions.argmax()])
+        model.save_target(join(dst_dir, piece.name), predictions)
 
 
 def main():

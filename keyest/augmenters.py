@@ -76,8 +76,9 @@ class Detuning(object):
 
 class Snippet(object):
 
-    def __init__(self, snippet_length):
+    def __init__(self, snippet_length, target_is_sequence=False):
         self.snippet_length = snippet_length
+        self.target_is_sequence = target_is_sequence
 
     @abstractmethod
     def snippet_start(self, data, data_length):
@@ -95,6 +96,11 @@ class Snippet(object):
             mask_snippet = np.zeros((mask.shape[0], self.snippet_length),
                                     dtype=mask.dtype)
 
+            if self.target_is_sequence:
+                targ_snippet = np.zeros(
+                    (target.shape[0], self.snippet_length) + target.shape[2:],
+                    dtype=target.dtype)
+
             for i in range(len(seq)):
                 dlen = np.flatnonzero(mask[i])[-1]
                 start = self.snippet_start(seq[i], dlen)
@@ -103,8 +109,14 @@ class Snippet(object):
                 ms = mask[i, start:end]
                 seq_snippet[i, :len(ds)] = ds
                 mask_snippet[i, :len(ms)] = ms
+                if self.target_is_sequence:
+                    ts = target[i, start:end, ...]
+                    targ_snippet[i, :len(ts)] = ts
 
-            yield (seq_snippet,) + other + (mask_snippet,) + (target,)
+            if self.target_is_sequence:
+                yield (seq_snippet,) + other + (mask_snippet,) + (targ_snippet,)
+            else:
+                yield (seq_snippet,) + other + (mask_snippet,) + (target,)
 
 
 class CenterSnippet(Snippet):

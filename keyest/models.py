@@ -11,20 +11,22 @@ from lasagne.layers import (DenseLayer, InputLayer, dropout_channels,
                             ReshapeLayer, Conv2DLayer, batch_norm,
                             MaxPool2DLayer, GlobalPoolLayer, NonlinearityLayer,
                             FlattenLayer, DimshuffleLayer, BatchNormLayer,
-                            ConcatLayer, ExpressionLayer, ElemwiseSumLayer)
+                            ConcatLayer, ExpressionLayer, ElemwiseSumLayer,
+                            TransposedConv2DLayer, SliceLayer, PadLayer)
 from lasagne.nonlinearities import softmax, elu
-from pastitsio.layers import AverageLayer, ExpressionMergeLayer
+from pastitsio.layers import (AverageLayer, ExpressionMergeLayer,
+                              ReflectDimLayer)
 from pastitsio.nonlinearities import TemperatureSoftmax
 
 import auds
 import trattoria
-from auds.representations import LogFiltSpec, SingleKeyMajMin
+from auds.representations import LogFiltSpec, SingleKeyMajMin, KeysMajMin
 from config import CACHE_DIR
-from augmenters import CenterSnippet, RandomSnippet
+from augmenters import RandomSnippet
 from trattoria.nets import NeuralNetwork
 from trattoria.objectives import (average_categorical_crossentropy,
                                   average_categorical_accuracy)
-from trattoria.iterators import augment, subset
+from trattoria.iterators import augment
 
 try:
     from lasagne.layers.dnn import MaxPool2DDNNLayer as MaxPool2DLayer
@@ -83,6 +85,10 @@ class TrainableModel(object):
     @staticmethod
     def target_representations():
         raise NotImplementedError('Specify target representation!')
+
+    @abstractmethod
+    def save_target(self, name, predictions):
+        pass
 
 
 def get_model(model):
@@ -244,6 +250,10 @@ class Eusipco2017(NeuralNetwork, TrainableModel):
     @staticmethod
     def target_representations():
         return [auds.representations.make_cached(SingleKeyMajMin(), CACHE_DIR)]
+
+    def save_target(self, name, predictions):
+        with open(name + '.key.txt', 'w') as f:
+            f.write(SingleKeyMajMin().map_back(predictions))
 
 
 class Eusipco2017Snippet(Eusipco2017):
@@ -525,6 +535,10 @@ class TagSelectedSnippet(NeuralNetwork, TrainableModel):
     def target_representations():
         return [auds.representations.make_cached(SingleKeyMajMin(), CACHE_DIR)]
 
+    def save_target(self, name, predictions):
+        with open(name + '.key.txt', 'w') as f:
+            f.write(SingleKeyMajMin().map_back(predictions))
+
 
 def remove_mask(batch_iterator):
     for batch in batch_iterator:
@@ -707,6 +721,43 @@ class AllConv(NeuralNetwork, TrainableModel):
     @staticmethod
     def target_representations():
         return [auds.representations.make_cached(SingleKeyMajMin(), CACHE_DIR)]
+
+    def save_target(self, name, predictions):
+        with open(name + '.key.txt', 'w') as f:
+            f.write(SingleKeyMajMin().map_back(predictions))
+
+    def to_madmom_nn(self):
+        from madmom.ml.nn.layers import (ConvolutionalLayer, FeedForwardLayer,
+                                         TransposeLayer, ReshapeLayer,
+                                         AverageLayer, PadLayer,
+                                         BatchNormLayer, MaxPoolLayer)
+        from madmom.ml.nn.activations import elu, softmax
+        from madmom.ml.nn import NeuralNetwork
+
+        layers = []
+
+        p = self.get_param_values()
+
+        def conv_bn(p):
+            layers = [
+                PadLayer(p[0].shape[-1]),
+                ConvolutionalLayer(
+                    p[0].transpose(1, 0, 2, 3)[:, :, ::-1, ::-1], np.array(0)),
+                BatchNormLayer(p[1], p[2], p[3], p[4], elu)
+            ]
+            del p[:5]
+            return layers
+
+        for _ in range(3):
+            layers.extend(conv_bn(p))
+            layers.append(MaxPoolLayer((2, 2)))
+        layers.extend(conv_bn(p))
+        layers.extend(conv_bn(p))
+
+        # "feed forward part"
+        layers.extend(conv_bn(p))
+        layers.append(AverageLayer(axis=(0, 1)))
+        return NeuralNetwork(layers)
 
 
 class AllConvTags(NeuralNetwork, TrainableModel):
@@ -917,6 +968,10 @@ class AllConvTags(NeuralNetwork, TrainableModel):
     @staticmethod
     def target_representations():
         return [auds.representations.make_cached(SingleKeyMajMin(), CACHE_DIR)]
+
+    def save_target(self, name, predictions):
+        with open(name + '.key.txt', 'w') as f:
+            f.write(SingleKeyMajMin().map_back(predictions))
 
 
 def erm_key_target(batch_iterator):
@@ -1206,3 +1261,218 @@ class AllConvDistilled(NeuralNetwork, TrainableModel):
             ),
             auds.representations.make_cached(SingleKeyMajMin(), CACHE_DIR)
         ]
+
+    def save_target(self, name, predictions):
+        with open(name + '.key.txt', 'w') as f:
+            f.write(SingleKeyMajMin().map_back(predictions))
+
+
+def flatten_target_sequence(it):
+    for batch in it:
+        target = batch[-1]
+        yield batch[:-1], target.reshape(-1, target.shape[-1])
+
+
+class Unet(NeuralNetwork, TrainableModel):
+
+    def __init__(self,
+                 feature_shape,
+                 n_filters=2,
+                 filter_size=3,
+                 n_epochs=100,
+                 learning_rate=0.001,
+                 patience=10,
+                 l2=0.0,
+                 snippet_length=400,
+                 batch_size=8,
+                 reflect_padding=False,
+                 ):
+
+        self._hypers = dict(
+            n_filters=n_filters,
+            filter_size=filter_size,
+            n_epochs=n_epochs,
+            learning_rate=learning_rate,
+            patience=patience,
+            l2=l2,
+            snippet_length=snippet_length,
+            batch_size=batch_size,
+            reflect_padding=reflect_padding
+        )
+
+        nonlin = lasagne.nonlinearities.elu
+        init_conv = lasagne.init.HeNormal
+
+        def conv_bn_reflect(net, n_filters, filter_size):
+            net = Conv2DLayer(net, num_filters=n_filters, filter_size=filter_size,
+                              stride=1, pad=0, W=init_conv(), nonlinearity=nonlin)
+            net = ReflectDimLayer(net, (filter_size // 2, filter_size // 2), 2)
+            net = ReflectDimLayer(net, (filter_size // 2, filter_size // 2), 3)
+            return batch_norm(net)
+
+        def conv_bn_zero(net, n_filters, filter_size):
+            return batch_norm(Conv2DLayer(
+                net, num_filters=n_filters, filter_size=filter_size,
+                stride=1, pad='same', W=init_conv(), nonlinearity=nonlin))
+
+        def deconv_bn(net, n_filters):
+            return batch_norm(TransposedConv2DLayer(
+                net, num_filters=n_filters, filter_size=2, stride=2,
+                nonlinearity=nonlin))
+
+        conv_bn = conv_bn_reflect if reflect_padding else conv_bn_zero
+
+        self.spec_in = tt.ftensor3('spec_in')
+        self.mask_in = tt.fmatrix('mask_in')
+        self.min_time_unit = 8
+
+        n_spec_bins = feature_shape[-1] - 1
+        net = InputLayer((None, None) + feature_shape, input_var=self.spec_in)
+        batch_size, n_time_steps, _ = net.input_var.shape
+        # remove last spectral bin so num bins is divisible by two 3 times
+        net = SliceLayer(net, slice(0, -1), -1)
+        net = ReshapeLayer(net, (batch_size, 1, n_time_steps, n_spec_bins))
+
+        # compute padding so that max-pooling works
+        old_length = n_time_steps
+        new_length = tt.cast(
+            tt.ceil(tt.cast(old_length, 'float32') /
+                    np.float32(self.min_time_unit))
+            * self.min_time_unit,
+            'int32')
+        begin = (new_length - old_length) / 2
+        end = begin + old_length
+        if reflect_padding:
+            net = ReflectDimLayer(net, width=(begin, new_length - end), dim=2)
+        else:
+            net = PadLayer(net, [(begin, new_length - end), (0, 0)])
+
+        # encoder
+        net = conv_bn(net, n_filters, filter_size)
+        net = conv_bn(net, n_filters, filter_size)
+        p1 = net
+        net = MaxPool2DLayer(net, pool_size=2, stride=2, name='pool1')
+
+        net = conv_bn(net, 2 * n_filters, filter_size)
+        net = conv_bn(net, 2 * n_filters, filter_size)
+        p2 = net
+        net = MaxPool2DLayer(net, pool_size=2, stride=2, name='pool2')
+
+        net = conv_bn(net, 4 * n_filters, filter_size)
+        net = conv_bn(net, 4 * n_filters, filter_size)
+        p3 = net
+        net = MaxPool2DLayer(net, pool_size=2, stride=2, name='pool3')
+
+        # bottlneck
+        net = conv_bn(net, 8 * n_filters, filter_size)
+        net = conv_bn(net, 8 * n_filters, filter_size)
+
+        # decoder
+        net = deconv_bn(net, 4 * n_filters)
+        net = ElemwiseSumLayer((p3, net), name='skip')
+        net = conv_bn(net, 4 * n_filters, filter_size)
+        net = conv_bn(net, 4 * n_filters, filter_size)
+
+        net = deconv_bn(net, 2 * n_filters)
+        net = ElemwiseSumLayer((p2, net), name='skip')
+        net = conv_bn(net, 2 * n_filters, filter_size)
+        net = conv_bn(net, 2 * n_filters, filter_size)
+
+        net = deconv_bn(net, n_filters)
+        net = ElemwiseSumLayer((p1, net), name='skip')
+        net = conv_bn(net, n_filters, filter_size)
+        net = conv_bn(net, n_filters, filter_size)
+
+        # classifier
+        net = Conv2DLayer(net, num_filters=25, filter_size=(1, n_spec_bins),
+                          nonlinearity=None, pad=0, name='classification')
+        net = FlattenLayer(net, outdim=3)
+        # remove padding that was added in the beginning
+        net = SliceLayer(net, slice(begin, end), name='cut away padding')
+
+        net = DimshuffleLayer(net, (0, 2, 1))
+        net = ReshapeLayer(net, (-1, 25))
+        net = NonlinearityLayer(net, softmax)
+
+        y = tt.ftensor3('y')
+        super(Unet, self).__init__(net, y)
+
+    @property
+    def needs_mask(self):
+        return False
+
+    def get_inputs(self):
+        return [self.spec_in, self.mask_in]
+
+    @property
+    def hypers(self):
+        return self._hypers
+
+    def update(self, loss, params):
+        return lasagne.updates.adam(loss, params,
+                                    learning_rate=self.hypers['learning_rate'])
+
+    @property
+    def observables(self):
+        def acc(p, t):
+            t = t.reshape((-1, 25))
+            m = self.mask_in.flatten()
+            return average_categorical_accuracy(p, t, m)
+        return {'acc': acc}
+
+    def loss(self, predictions, targets):
+        targets = targets.reshape((-1, 25))
+        mask = self.mask_in.flatten()
+        return average_categorical_crossentropy(predictions, targets, mask)
+
+    @property
+    def regularizers(self):
+        return [lasagne.regularization.regularize_layer_params(
+            self.net, lasagne.regularization.l2) * self.hypers['l2']]
+
+    def compile_process_function(self):
+        self._process = theano.function(
+            inputs=[self.spec_in], outputs=lasagne.layers.get_output(
+                self.net, deterministic=True),
+            name='process'
+        )
+
+    def train_iterator(self, data):
+        return trattoria.iterators.SubsetIterator(
+            trattoria.iterators.AugmentedIterator(
+                trattoria.iterators.SequenceIterator(
+                    data.datasources,
+                    batch_size=self.hypers['batch_size'],
+                    shuffle=True,
+                    fill_last=True,
+                ),
+                RandomSnippet(snippet_length=self.hypers['snippet_length'],
+                              target_is_sequence=True)
+            ),
+        )
+
+    def test_iterator(self, data):
+        return trattoria.iterators.AugmentedIterator(
+                trattoria.iterators.SequenceIterator(
+                    data.datasources,
+                    batch_size=1,
+                    shuffle=True,
+                    fill_last=True,
+                ),
+            )
+
+    @staticmethod
+    def source_representations():
+        return [auds.representations.make_cached(
+            LogFiltSpec(frame_size=8192, fft_size=None, n_bands=24,
+                        fmin=65, fmax=2100, fps=5, unique_filters=True,
+                        sample_rate=44100), CACHE_DIR)]
+
+    @staticmethod
+    def target_representations():
+        return [auds.representations.make_cached(KeysMajMin(fps=5), CACHE_DIR)]
+
+    def save_target(self, name, predictions):
+        keys = KeysMajMin(fps=5).map_back(predictions)
+        np.savetxt(name + '.keys.txt', keys, fmt=['%.3f', '%.3f', '%s'],
+                   delimiter='\t')
