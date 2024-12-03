@@ -182,17 +182,7 @@ def load(datasets, augmented=True):
             name='Rock Presegmented'
         )
         test_datasets.append(rock)
-    if 'beatles_multi' in datasets:
-        beatles = Dataset.from_directory(
-            join(DATASET_DIR, 'beatles'),
-            views=[Views.audio, Views.keys],
-            name='Beatles'
-        )
-        rs = np.random.RandomState(4711)
-        b_tr, b_va, b_te = beatles.random_subsets([0.7, 0.1, 0.2], rs)
-        train_datasets.append(b_tr)
-        val_datasets.append(b_va)
-        test_datasets.append(b_te)
+
 
     train_dataset = sum(train_datasets, Dataset())
     val_dataset = sum(val_datasets, Dataset())

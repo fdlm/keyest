@@ -723,6 +723,39 @@ class AllConv(NeuralNetwork, TrainableModel):
         with open(name + '.key.txt', 'w') as f:
             f.write(SingleKeyMajMin().map_back(predictions))
 
+    def to_madmom_nn(self):
+        from madmom.ml.nn.layers import (ConvolutionalLayer, FeedForwardLayer,
+                                         TransposeLayer, ReshapeLayer,
+                                         AverageLayer, PadLayer,
+                                         BatchNormLayer, MaxPoolLayer)
+        from madmom.ml.nn.activations import elu, softmax
+        from madmom.ml.nn import NeuralNetwork
+
+        layers = []
+
+        p = self.get_param_values()
+
+        def conv_bn(p):
+            layers = [
+                PadLayer(p[0].shape[-1]),
+                ConvolutionalLayer(
+                    p[0].transpose(1, 0, 2, 3)[:, :, ::-1, ::-1], np.array(0)),
+                BatchNormLayer(p[1], p[2], p[3], p[4], elu)
+            ]
+            del p[:5]
+            return layers
+
+        for _ in range(3):
+            layers.extend(conv_bn(p))
+            layers.append(MaxPoolLayer((2, 2)))
+        layers.extend(conv_bn(p))
+        layers.extend(conv_bn(p))
+
+        # "feed forward part"
+        layers.extend(conv_bn(p))
+        layers.append(AverageLayer(axis=(0, 1)))
+        return NeuralNetwork(layers)
+
 
 class AllConvTags(NeuralNetwork, TrainableModel):
 
